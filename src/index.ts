@@ -19,6 +19,7 @@ import { createAntiDetectionTools } from './tools/anti-detection.js';
 import { createServiceWorkerTools } from './tools/service-worker.js';
 import { createCaptureTools } from './tools/capture.js';
 import { createSessionTools } from './tools/session.js';
+import { createSystemTools } from './tools/system.js';
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -49,6 +50,7 @@ const allTools = [
   ...createServiceWorkerTools(connector),
   ...createCaptureTools(connector),
   ...createSessionTools(connector),
+  ...createSystemTools(connector),
 ];
 
 // Create tool map for quick lookup
@@ -153,6 +155,7 @@ async function main() {
     console.error('  - Service Workers (9 tools)');
     console.error('  - Capture & Export (5 tools)');
     console.error('  - Session & Cookies (9 tools)');
+    console.error('  - System & Extensions (4 tools)');
     console.error('');
     console.error('✨ Server ready! Waiting for requests...');
     
