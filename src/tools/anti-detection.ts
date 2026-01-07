@@ -4,7 +4,7 @@
  */
 
 import { z } from 'zod';
-import type { ChromeConnector } from '../chrome-connector';
+import type { ChromeConnector } from '../chrome-connector.js';
 
 export function createAntiDetectionTools(connector: ChromeConnector) {
   return [

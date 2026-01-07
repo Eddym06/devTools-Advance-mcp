@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import type { ChromeConnector } from '../chrome-connector';
+import type { ChromeConnector } from '../chrome-connector.js';
 
 export function createCaptureTools(connector: ChromeConnector) {
   return [

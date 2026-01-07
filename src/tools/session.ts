@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import type { ChromeConnector } from '../chrome-connector';
-import type { SessionData } from '../types/index';
+import type { ChromeConnector } from '../chrome-connector.js';
+import type { SessionData } from '../types/index.js';
 
 export function createSessionTools(connector: ChromeConnector) {
   return [

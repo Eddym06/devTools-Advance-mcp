@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import type { ChromeConnector } from '../chrome-connector';
-import { humanDelay, waitFor } from '../utils/helpers';
+import type { ChromeConnector } from '../chrome-connector.js';
+import { humanDelay, waitFor } from '../utils/helpers.js';
 
 export function createInteractionTools(connector: ChromeConnector) {
   return [

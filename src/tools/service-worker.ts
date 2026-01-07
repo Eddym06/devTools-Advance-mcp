@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import type { ChromeConnector } from '../chrome-connector';
-import type { ServiceWorkerInfo } from '../types/index';
+import type { ChromeConnector } from '../chrome-connector.js';
+import type { ServiceWorkerInfo } from '../types/index.js';
 
 export function createServiceWorkerTools(connector: ChromeConnector) {
   return [

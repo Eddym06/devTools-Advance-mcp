@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import type { ChromeConnector } from '../chrome-connector';
-import { isValidUrl, humanDelay } from '../utils/helpers';
+import type { ChromeConnector } from '../chrome-connector.js';
+import { isValidUrl, humanDelay } from '../utils/helpers.js';
 
 export function createNavigationTools(connector: ChromeConnector) {
   return [

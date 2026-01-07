@@ -12,13 +12,13 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { ChromeConnector } from './chrome-connector';
-import { createNavigationTools } from './tools/navigation';
-import { createInteractionTools } from './tools/interaction';
-import { createAntiDetectionTools } from './tools/anti-detection';
-import { createServiceWorkerTools } from './tools/service-worker';
-import { createCaptureTools } from './tools/capture';
-import { createSessionTools } from './tools/session';
+import { ChromeConnector } from './chrome-connector.js';
+import { createNavigationTools } from './tools/navigation.js';
+import { createInteractionTools } from './tools/interaction.js';
+import { createAntiDetectionTools } from './tools/anti-detection.js';
+import { createServiceWorkerTools } from './tools/service-worker.js';
+import { createCaptureTools } from './tools/capture.js';
+import { createSessionTools } from './tools/session.js';
 
 // Parse command line arguments
 const args = process.argv.slice(2);
