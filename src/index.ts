@@ -63,20 +63,43 @@ function zodTypeToJsonSchema(schema: any): any {
   if (!schema) return { type: 'string' };
   
   let current = schema;
-  let isOptional = false;
+  let description = current.description;
+  let defaultValue: any = undefined;
+
+  // Unwrap Optional/Default/Effects wrappers and collect metadata
+  while (
+    current._def.typeName === 'ZodOptional' || 
+    current._def.typeName === 'ZodDefault' ||
+    current._def.typeName === 'ZodEffects'
+  ) {
+    if (current.description) description = current.description;
+    
+    if (current._def.typeName === 'ZodDefault') {
+        defaultValue = current._def.defaultValue();
+    }
+    
+    if (current._def.typeName === 'ZodEffects') {
+      current = current._def.schema;
+    } else {
+      current = current._def.innerType;
+    }
+  }
   
-  // Unwrap Optional/Default wrappers
-  while (current._def.typeName === 'ZodOptional' || current._def.typeName === 'ZodDefault') {
-    if (current._def.typeName === 'ZodOptional') isOptional = true;
-    current = current._def.innerType;
+  // If we still haven't found a description on the wrappers, check the inner type
+  if (!description && current.description) {
+    description = current.description;
   }
   
   const def = current._def;
   let type = 'string'; // Default fallback
   const jsonSchema: any = {};
   
-  if (current.description) {
-    jsonSchema.description = current.description;
+  if (description) {
+    jsonSchema.description = description;
+  }
+  
+  if (defaultValue !== undefined) {
+      jsonSchema.default = defaultValue;
   }
   
   switch (def.typeName) {
@@ -92,6 +115,15 @@ function zodTypeToJsonSchema(schema: any): any {
     case 'ZodEnum':
       type = 'string';
       jsonSchema.enum = def.values;
+      break;
+    case 'ZodArray':
+      type = 'array';
+      jsonSchema.items = zodTypeToJsonSchema(def.type);
+      break;
+    case 'ZodNativeEnum':
+      type = 'string';
+      // Basic support for numeric enums or string enums
+      jsonSchema.enum = Object.values(def.values);
       break;
   }
   
@@ -116,9 +148,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           // Check if required
           let isOptional = false;
           let current = zodSchema;
-          while (current._def.typeName === 'ZodOptional' || current._def.typeName === 'ZodDefault') {
-             if (current._def.typeName === 'ZodOptional') isOptional = true;
-             current = current._def.innerType;
+          
+          // Unwrap to check strict optionality
+          while (
+            current._def.typeName === 'ZodOptional' || 
+            current._def.typeName === 'ZodDefault' ||
+            current._def.typeName === 'ZodEffects'
+          ) {
+             if (current._def.typeName === 'ZodOptional' || current._def.typeName === 'ZodDefault') {
+               isOptional = true;
+             }
+             
+             if (current._def.typeName === 'ZodEffects') {
+               current = current._def.schema;
+             } else {
+               current = current._def.innerType;
+             }
           }
           
           if (!isOptional) {

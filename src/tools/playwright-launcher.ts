@@ -12,7 +12,7 @@ export function createPlaywrightLauncherTools(connector: ChromeConnector) {
       name: 'launch_chrome_with_profile',
       description: 'Launch Chrome using Playwright with your user profile (keeps cookies, sessions, extensions). This is the recommended way to start Chrome.',
       inputSchema: z.object({
-        profileDirectory: z.string().optional().default('Default').describe('Profile directory name: "Default", "Profile 1", "Profile 2", etc.'),
+        profileDirectory: z.string().default('Default').describe('Profile directory name: "Default", "Profile 1", "Profile 2", etc.'),
         userDataDir: z.string().optional().describe('Full path to Chrome User Data directory. Leave empty for default location.')
       }),
       handler: async ({ profileDirectory, userDataDir }: any) => {
@@ -48,7 +48,7 @@ export function createPlaywrightLauncherTools(connector: ChromeConnector) {
       name: 'launch_edge_with_profile',
       description: 'Launch Microsoft Edge using Playwright with your user profile',
       inputSchema: z.object({
-        profileDirectory: z.string().optional().default('Default').describe('Profile directory name')
+        profileDirectory: z.string().default('Default').describe('Profile directory name')
       }),
       handler: async ({ profileDirectory }: any) => {
         try {

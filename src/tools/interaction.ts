@@ -15,10 +15,11 @@ export function createInteractionTools(connector: ChromeConnector) {
       inputSchema: z.object({
         selector: z.string().describe('CSS selector of element to click'),
         tabId: z.string().optional().describe('Tab ID (optional)'),
-        waitForSelector: z.boolean().optional().default(true).describe('Wait for selector to be visible'),
-        timeout: z.number().optional().default(30000).describe('Timeout in milliseconds')
+        waitForSelector: z.boolean().default(true).describe('Wait for selector to be visible'),
+        timeout: z.number().default(30000).describe('Timeout in milliseconds')
       }),
       handler: async ({ selector, tabId, waitForSelector, timeout = 30000 }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime, DOM } = client;
         
@@ -73,10 +74,11 @@ export function createInteractionTools(connector: ChromeConnector) {
         selector: z.string().describe('CSS selector of input element'),
         text: z.string().describe('Text to type'),
         tabId: z.string().optional().describe('Tab ID (optional)'),
-        clearFirst: z.boolean().optional().default(true).describe('Clear existing text first'),
-        timeout: z.number().optional().default(30000).describe('Timeout in milliseconds')
+        clearFirst: z.boolean().default(true).describe('Clear existing text first'),
+        timeout: z.number().default(30000).describe('Timeout in milliseconds')
       }),
       handler: async ({ selector, text, tabId, clearFirst, timeout = 30000 }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -125,6 +127,7 @@ export function createInteractionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ selector, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -162,6 +165,7 @@ export function createInteractionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ selector, attribute, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -193,10 +197,11 @@ export function createInteractionTools(connector: ChromeConnector) {
       inputSchema: z.object({
         script: z.string().describe('JavaScript code to execute'),
         tabId: z.string().optional().describe('Tab ID (optional) - MUST be a Page/Tab ID, not a Service Worker ID'),
-        awaitPromise: z.boolean().optional().default(false).describe('Wait for promise to resolve'),
-        timeout: z.number().optional().default(30000).describe('Timeout in milliseconds')
+        awaitPromise: z.boolean().default(false).describe('Wait for promise to resolve'),
+        timeout: z.number().default(30000).describe('Timeout in milliseconds')
       }),
       handler: async ({ script, tabId, awaitPromise, timeout = 30000 }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -224,12 +229,13 @@ export function createInteractionTools(connector: ChromeConnector) {
       name: 'scroll',
       description: 'Scroll the page or an element',
       inputSchema: z.object({
-        x: z.number().optional().default(0).describe('Horizontal scroll position'),
+        x: z.number().default(0).describe('Horizontal scroll position'),
         y: z.number().optional().describe('Vertical scroll position'),
         selector: z.string().optional().describe('CSS selector to scroll (scrolls window if not provided)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ x, y, selector, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -255,10 +261,11 @@ export function createInteractionTools(connector: ChromeConnector) {
       description: 'Wait for an element to appear on the page',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector to wait for'),
-        timeout: z.number().optional().default(30000).describe('Timeout in milliseconds'),
+        timeout: z.number().default(30000).describe('Timeout in milliseconds'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ selector, timeout, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -292,6 +299,7 @@ export function createInteractionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ selector, value, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         

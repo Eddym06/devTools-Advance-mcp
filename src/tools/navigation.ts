@@ -15,31 +15,49 @@ export function createNavigationTools(connector: ChromeConnector) {
       inputSchema: z.object({
         url: z.string().describe('URL to navigate to'),
         tabId: z.string().optional().describe('Tab ID (optional, uses current tab if not specified)'),
-        waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle']).optional().default('load')
+        waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle']).default('load')
           .describe('Wait until this event fires'),
-        timeout: z.number().optional().default(30000).describe('Timeout in milliseconds')
+        timeout: z.number().default(30000).describe('Timeout in milliseconds')
       }),
       handler: async ({ url, tabId, waitUntil, timeout = 30000 }: any) => {
+        console.error(`[Navigation] Starting navigation to ${url} (tab: ${tabId || 'active'})`);
+        
+        // VERIFY CONNECTION FIRST
+        await connector.verifyConnection();
+        
         if (!isValidUrl(url)) {
+          console.error(`[Navigation] Invalid URL rejected: ${url}`);
           throw new Error(`Invalid URL: ${url}`);
         }
 
+        console.error(`[Navigation] Connecting to tab...`);
         const client = await connector.getTabClient(tabId);
+        console.error(`[Navigation] Connected to tab. Enabling Page domain...`);
         const { Page } = client;
         
         await Page.enable();
-        await Page.navigate({ url });
+
+        console.error(`[Navigation] Setting up event listener for ${waitUntil}...`);
         
-        // Wait for the specified event
-        const waitPromise = (async () => {
-             if (waitUntil === 'load') {
-               await Page.loadEventFired();
-             } else if (waitUntil === 'domcontentloaded') {
-               await Page.domContentEventFired();
-             }
-        })();
+        // Set up the event listener BEFORE navigating
+        let eventPromise;
+        if (waitUntil === 'load') {
+          eventPromise = Page.loadEventFired();
+        } else if (waitUntil === 'domcontentloaded') {
+          eventPromise = Page.domContentEventFired();
+        } else {
+          // For networkidle, just wait a bit
+          eventPromise = new Promise(r => setTimeout(r, 1000));
+        }
+
+        console.error(`[Navigation] Page domain enabled. Sending navigate command...`);
+        const navResponse = await Page.navigate({ url });
+        console.error(`[Navigation] Navigate response:`, navResponse);
         
-        await withTimeout(waitPromise, timeout, `Navigation to ${url} timed out`);
+        console.error(`[Navigation] Waiting for ${waitUntil} event...`);
+        await withTimeout(eventPromise, timeout, `Navigation to ${url} timed out`);
+        
+        console.error(`[Navigation] Event received successfully!`);
         
         await humanDelay();
         
@@ -59,6 +77,7 @@ export function createNavigationTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Page } = client;
         
@@ -84,6 +103,7 @@ export function createNavigationTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Page } = client;
         
@@ -107,9 +127,10 @@ export function createNavigationTools(connector: ChromeConnector) {
       description: 'Reload the current page',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)'),
-        ignoreCache: z.boolean().optional().default(false).describe('Ignore cache when reloading')
+        ignoreCache: z.boolean().default(false).describe('Ignore cache when reloading')
       }),
       handler: async ({ tabId, ignoreCache }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Page } = client;
         
@@ -131,6 +152,7 @@ export function createNavigationTools(connector: ChromeConnector) {
       description: 'List all open tabs',
       inputSchema: z.object({}),
       handler: async () => {
+        await connector.verifyConnection();
         const tabs = await connector.listTabs();
         return {
           success: true,
@@ -152,6 +174,7 @@ export function createNavigationTools(connector: ChromeConnector) {
         url: z.string().optional().describe('URL to open in new tab (optional)')
       }),
       handler: async ({ url }: any) => {
+        await connector.verifyConnection();
         const newTab = await connector.createTab(url);
         await humanDelay();
         
@@ -175,6 +198,7 @@ export function createNavigationTools(connector: ChromeConnector) {
         tabId: z.string().describe('Tab ID to close')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         await connector.closeTab(tabId);
         await humanDelay();
         
@@ -193,6 +217,7 @@ export function createNavigationTools(connector: ChromeConnector) {
         tabId: z.string().describe('Tab ID to switch to')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         await connector.activateTab(tabId);
         await humanDelay();
         
@@ -211,6 +236,7 @@ export function createNavigationTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Page } = client;
         

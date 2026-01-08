@@ -16,6 +16,7 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime, Page } = client;
         
@@ -134,6 +135,7 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ userAgent, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network } = client;
         
@@ -163,11 +165,12 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
       inputSchema: z.object({
         width: z.number().describe('Viewport width'),
         height: z.number().describe('Viewport height'),
-        deviceScaleFactor: z.number().optional().default(1).describe('Device scale factor'),
-        mobile: z.boolean().optional().default(false).describe('Emulate mobile device'),
+        deviceScaleFactor: z.number().default(1).describe('Device scale factor'),
+        mobile: z.boolean().default(false).describe('Emulate mobile device'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ width, height, deviceScaleFactor, mobile, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Emulation } = client;
         
@@ -193,10 +196,11 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
       inputSchema: z.object({
         latitude: z.number().describe('Latitude'),
         longitude: z.number().describe('Longitude'),
-        accuracy: z.number().optional().default(100).describe('Accuracy in meters'),
+        accuracy: z.number().default(100).describe('Accuracy in meters'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ latitude, longitude, accuracy, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Emulation } = client;
         
@@ -223,6 +227,7 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ timezoneId, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Emulation } = client;
         

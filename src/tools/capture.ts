@@ -12,9 +12,9 @@ export function createCaptureTools(connector: ChromeConnector) {
       name: 'screenshot',
       description: 'Take a screenshot of the current page or a specific area',
       inputSchema: z.object({
-        format: z.enum(['png', 'jpeg']).optional().default('png').describe('Image format'),
-        quality: z.number().min(0).max(100).optional().default(90).describe('JPEG quality (0-100)'),
-        fullPage: z.boolean().optional().default(false).describe('Capture full page'),
+        format: z.enum(['png', 'jpeg']).default('png').describe('Image format'),
+        quality: z.number().min(0).max(100).default(90).describe('JPEG quality (0-100)'),
+        fullPage: z.boolean().default(false).describe('Capture full page'),
         clipX: z.number().optional().describe('Clip area X coordinate'),
         clipY: z.number().optional().describe('Clip area Y coordinate'),
         clipWidth: z.number().optional().describe('Clip area width'),
@@ -22,6 +22,7 @@ export function createCaptureTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ format, quality, fullPage, clipX, clipY, clipWidth, clipHeight, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Page } = client;
         
@@ -70,9 +71,10 @@ export function createCaptureTools(connector: ChromeConnector) {
       description: 'Get the HTML content of the current page',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)'),
-        outerHTML: z.boolean().optional().default(true).describe('Get outer HTML (includes <html> tag)')
+        outerHTML: z.boolean().default(true).describe('Get outer HTML (includes <html> tag)')
       }),
       handler: async ({ tabId, outerHTML }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -100,15 +102,16 @@ export function createCaptureTools(connector: ChromeConnector) {
       name: 'print_to_pdf',
       description: 'Print the current page to PDF',
       inputSchema: z.object({
-        landscape: z.boolean().optional().default(false).describe('Landscape orientation'),
-        displayHeaderFooter: z.boolean().optional().default(false).describe('Display header/footer'),
-        printBackground: z.boolean().optional().default(true).describe('Print background graphics'),
-        scale: z.number().min(0.1).max(2).optional().default(1).describe('Scale (0.1-2)'),
+        landscape: z.boolean().default(false).describe('Landscape orientation'),
+        displayHeaderFooter: z.boolean().default(false).describe('Display header/footer'),
+        printBackground: z.boolean().default(true).describe('Print background graphics'),
+        scale: z.number().min(0.1).max(2).default(1).describe('Scale (0.1-2)'),
         paperWidth: z.number().optional().describe('Paper width in inches'),
         paperHeight: z.number().optional().describe('Paper height in inches'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ landscape, displayHeaderFooter, printBackground, scale, paperWidth, paperHeight, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Page } = client;
         
@@ -143,6 +146,7 @@ export function createCaptureTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Page } = client;
         
@@ -169,6 +173,7 @@ export function createCaptureTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Accessibility } = client;
         

@@ -16,6 +16,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -55,10 +56,11 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
       description: 'Get recent console logs from a specific Service Worker Target. Generates test logs and captures them in real-time.',
       inputSchema: z.object({
         targetId: z.string().describe('The Target ID of the service worker (from list_tabs)'),
-        executeTestLogs: z.boolean().optional().default(true).describe('Whether to execute test console.log statements to verify capture (default: true)'),
-        captureTimeMs: z.number().optional().default(3000).describe('How long to listen for logs in milliseconds (default: 3000)')
+        executeTestLogs: z.boolean().default(true).describe('Whether to execute test console.log statements to verify capture (default: true)'),
+        captureTimeMs: z.number().default(3000).describe('How long to listen for logs in milliseconds (default: 3000)')
       }),
       handler: async ({ targetId, executeTestLogs = true, captureTimeMs = 3000 }: any) => {
+        await connector.verifyConnection();
         // Connect directly to the specific target
         const client = await connector.getTabClient(targetId);
         const { Runtime, Log } = client;
@@ -172,6 +174,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ versionId, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { ServiceWorker } = client;
         
@@ -207,6 +210,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ scopeURL, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -244,6 +248,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ scopeURL, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -281,6 +286,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ scopeURL, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { ServiceWorker } = client;
         
@@ -303,6 +309,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ versionId, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { ServiceWorker } = client;
         
@@ -325,6 +332,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ versionId, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { ServiceWorker } = client;
         
@@ -347,6 +355,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ scopeURL, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { ServiceWorker } = client;
         
@@ -368,6 +377,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { CacheStorage } = client;
         

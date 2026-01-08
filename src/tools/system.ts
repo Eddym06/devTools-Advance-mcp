@@ -17,6 +17,7 @@ export function createSystemTools(connector: ChromeConnector) {
         filterType: z.enum(['all', 'service_worker', 'background_page', 'page', 'iframe', 'worker']).optional().describe('Filter by target type')
       }),
       handler: async ({ filterType }: any) => {
+        await connector.verifyConnection();
         const port = connector.getPort();
         const targets = await CDP.List({ port });
         
@@ -98,6 +99,7 @@ export function createSystemTools(connector: ChromeConnector) {
         targetId: z.string().describe('Target ID to connect to')
       }),
       handler: async ({ targetId }: any) => {
+        await connector.verifyConnection();
         const port = connector.getPort();
         // Use a finder function to safely identify the target
         const client = await CDP({ 
@@ -136,9 +138,10 @@ export function createSystemTools(connector: ChromeConnector) {
       inputSchema: z.object({
         targetId: z.string().describe('Target ID'),
         script: z.string().describe('JavaScript code to execute'),
-        awaitPromise: z.boolean().optional().default(false).describe('Wait for promise')
+        awaitPromise: z.boolean().default(false).describe('Wait for promise')
       }),
       handler: async ({ targetId, script, awaitPromise }: any) => {
+        await connector.verifyConnection();
         const port = connector.getPort();
         // Use a finder function to safely identify the target
         const client = await CDP({ 
@@ -178,9 +181,10 @@ export function createSystemTools(connector: ChromeConnector) {
       name: 'get_extension_service_workers',
       description: 'Get all extension service workers with detailed information and runtime access',
       inputSchema: z.object({
-        executeTest: z.boolean().optional().default(false).describe('Execute a test script to verify chrome.runtime access')
+        executeTest: z.boolean().default(false).describe('Execute a test script to verify chrome.runtime access')
       }),
       handler: async ({ executeTest }: any) => {
+        await connector.verifyConnection();
         const port = connector.getPort();
         const targets = await CDP.List({ port });
         

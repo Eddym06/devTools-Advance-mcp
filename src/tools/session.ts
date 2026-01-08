@@ -17,6 +17,7 @@ export function createSessionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ url, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network } = client;
         
@@ -52,14 +53,15 @@ export function createSessionTools(connector: ChromeConnector) {
         name: z.string().describe('Cookie name'),
         value: z.string().describe('Cookie value'),
         domain: z.string().optional().describe('Cookie domain'),
-        path: z.string().optional().default('/').describe('Cookie path'),
-        secure: z.boolean().optional().default(false).describe('Secure flag'),
-        httpOnly: z.boolean().optional().default(false).describe('HttpOnly flag'),
+        path: z.string().default('/').describe('Cookie path'),
+        secure: z.boolean().default(false).describe('Secure flag'),
+        httpOnly: z.boolean().default(false).describe('HttpOnly flag'),
         sameSite: z.enum(['Strict', 'Lax', 'None']).optional().describe('SameSite attribute'),
         expires: z.number().optional().describe('Expiration timestamp'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ name, value, domain, path, secure, httpOnly, sameSite, expires, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network } = client;
         
@@ -108,10 +110,11 @@ export function createSessionTools(connector: ChromeConnector) {
       inputSchema: z.object({
         name: z.string().describe('Cookie name to delete'),
         domain: z.string().optional().describe('Cookie domain (optional, uses current domain if not specified)'),
-        path: z.string().optional().default('/').describe('Cookie path'),
+        path: z.string().default('/').describe('Cookie path'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ name, domain, path, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network } = client;
         
@@ -141,10 +144,11 @@ export function createSessionTools(connector: ChromeConnector) {
       name: 'clear_cookies',
       description: 'Clear all cookies for the current domain or all domains',
       inputSchema: z.object({
-        allDomains: z.boolean().optional().default(false).describe('Clear cookies for all domains'),
+        allDomains: z.boolean().default(false).describe('Clear cookies for all domains'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ allDomains, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network } = client;
         
@@ -185,6 +189,7 @@ export function createSessionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -215,6 +220,7 @@ export function createSessionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ key, value, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -239,6 +245,7 @@ export function createSessionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
@@ -263,6 +270,7 @@ export function createSessionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network, Runtime } = client;
         
@@ -317,6 +325,7 @@ export function createSessionTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ sessionData, tabId }: any) => {
+        await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network, Runtime } = client;
         
