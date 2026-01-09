@@ -139,7 +139,7 @@ Agrega en tu `mcp.json` o configuración de Cline/Claude:
 
 ### 3. ¡Empieza a usar!
 
-El MCP se conectará automáticamente a tu Chrome y tendrás acceso a 44 herramientas organizadas en 6 categorías.
+El MCP se conectará automáticamente a tu Chrome y tendrás acceso a **84 herramientas** organizadas en **15 categorías**.
 
 ## 🛠️ Herramientas Disponibles
 
@@ -190,12 +190,46 @@ El MCP se conectará automáticamente a tu Chrome y tendrás acceso a 44 herrami
 - `get_accessibility_snapshot` - Snapshot Playwright-style
 
 ### Network Interception (8 herramientas)
-- `enable_network_interception` - Activar interceptación
+- `enable_network_interception` - Activar interceptación de requests
 - `list_intercepted_requests` - Listar requests interceptados
 - `modify_intercepted_request` - Modificar request (headers, URL, body)
 - `fail_intercepted_request` - Bloquear request (ads, tracking)
 - `continue_intercepted_request` - Continuar sin modificar
 - `disable_network_interception` - Desactivar interceptación
+
+### Network Response Interception (4 herramientas)
+- `enable_response_interception` - Activar interceptación de respuestas
+- `list_intercepted_responses` - Listar respuestas interceptadas
+- `modify_intercepted_response` - Modificar respuesta (body, headers, status)
+- `disable_response_interception` - Desactivar interceptación
+
+### Request/Response Mocking (4 herramientas)
+- `create_mock_endpoint` - Crear endpoint falso (mock API responses)
+- `list_mock_endpoints` - Listar mocks activos
+- `delete_mock_endpoint` - Eliminar mock específico
+- `clear_all_mocks` - Limpiar todos los mocks
+
+### WebSocket Interception (5 herramientas)
+- `enable_websocket_interception` - Activar interceptación de WebSockets
+- `list_websocket_connections` - Listar conexiones WS activas
+- `list_websocket_messages` - Ver mensajes WS (sent/received)
+- `send_websocket_message` - Inyectar mensaje en WebSocket
+- `disable_websocket_interception` - Desactivar interceptación WS
+
+### HAR Recording & Replay (3 herramientas)
+- `start_har_recording` - Iniciar grabación HAR (HTTP Archive)
+- `stop_har_recording` - Detener y obtener HAR data
+- `export_har_file` - Exportar HAR a archivo .har
+
+### Advanced Request Patterns (1 herramienta)
+- `add_advanced_interception_pattern` - Patrón avanzado (status code, size, duration, content-type, action)
+
+### CSS/JS Injection Pipeline (5 herramientas)
+- `inject_css_global` - Inyectar CSS en todas las páginas
+- `inject_js_global` - Inyectar JavaScript en todas las páginas
+- `list_injected_scripts` - Listar inyecciones activas
+- `remove_injection` - Remover inyección específica
+- `clear_all_injections` - Limpiar todas las inyecciones
 
 ### Sesiones & Cookies (9 herramientas)
 - `get_cookies` - Obtener cookies
@@ -311,6 +345,181 @@ const fullTree = await mcp.call('get_accessibility_tree', {
 });
 console.log(`Total nodes: ${fullTree.totalNodes}`);
 ```
+
+### Ejemplo 7: Interceptar y modificar respuestas
+```typescript
+// Activar interceptación de RESPUESTAS (no solo requests)
+await mcp.call('enable_response_interception', {
+  patterns: ['*api.example.com/*'],
+  resourceTypes: ['XHR', 'Fetch']
+});
+
+// Esperar a que se intercepte una respuesta
+const responses = await mcp.call('list_intercepted_responses', {});
+console.log('Intercepted responses:', responses.interceptedResponses);
+
+// Modificar el body de una respuesta JSON
+await mcp.call('modify_intercepted_response', {
+  requestId: 'response-id',
+  modifiedBody: JSON.stringify({ modified: true, data: [1, 2, 3] }),
+  modifiedStatusCode: 200,
+  modifiedHeaders: {
+    'Content-Type': 'application/json',
+    'X-Modified': 'true'
+  }
+});
+```
+
+### Ejemplo 8: Mock API endpoints
+```typescript
+// Crear un mock endpoint para API
+await mcp.call('create_mock_endpoint', {
+  urlPattern: '*api.example.com/users*',
+  responseBody: JSON.stringify([
+    { id: 1, name: 'John Doe', email: 'john@example.com' },
+    { id: 2, name: 'Jane Smith', email: 'jane@example.com' }
+  ]),
+  statusCode: 200,
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Mock': 'true'
+  },
+  latency: 500,  // Simular 500ms de latencia
+  method: 'GET'
+});
+
+// Navegar y la API será interceptada automáticamente
+await mcp.call('navigate', { url: 'https://example.com' });
+
+// Ver estadísticas de mocks
+const mocks = await mcp.call('list_mock_endpoints', {});
+console.log('Active mocks:', mocks.mocks);
+
+// Limpiar cuando termines
+await mcp.call('clear_all_mocks', {});
+```
+
+### Ejemplo 9: WebSocket interception
+```typescript
+// Activar interceptación de WebSockets
+await mcp.call('enable_websocket_interception', {
+  urlPattern: 'wss://example.com/socket'
+});
+
+// Listar conexiones WebSocket activas
+const connections = await mcp.call('list_websocket_connections', {});
+console.log('Active WebSockets:', connections.connections);
+
+// Ver mensajes enviados y recibidos
+const messages = await mcp.call('list_websocket_messages', {
+  direction: 'all',
+  limit: 50
+});
+console.log('WS Messages:', messages.messages);
+
+// Inyectar un mensaje falso
+await mcp.call('send_websocket_message', {
+  requestId: 'ws-connection-id',
+  message: JSON.stringify({ type: 'ping', timestamp: Date.now() })
+});
+```
+
+### Ejemplo 10: HAR recording
+```typescript
+// Iniciar grabación de tráfico de red en formato HAR
+await mcp.call('start_har_recording', {});
+
+// Navegar y realizar acciones
+await mcp.call('navigate', { url: 'https://example.com' });
+await mcp.call('click', { selector: 'button.load-data' });
+await new Promise(resolve => setTimeout(resolve, 3000));
+
+// Detener y obtener HAR data
+const harData = await mcp.call('stop_har_recording', {});
+console.log(`Captured ${harData.entriesCount} requests`);
+
+// Exportar a archivo
+await mcp.call('export_har_file', {
+  filename: 'recording.har',
+  outputDir: './recordings'
+});
+```
+
+### Ejemplo 11: Advanced request patterns
+```typescript
+// Crear patrón avanzado: bloquear imágenes grandes
+await mcp.call('add_advanced_interception_pattern', {
+  name: 'block-large-images',
+  resourceType: 'Image',
+  minSize: 500000,  // > 500KB
+  action: 'block'
+});
+
+// Crear patrón: delay requests lentos
+await mcp.call('add_advanced_interception_pattern', {
+  name: 'delay-slow-apis',
+  urlPattern: '*slow-api.com/*',
+  statusCodeMin: 200,
+  statusCodeMax: 299,
+  action: 'delay',
+  delayMs: 2000
+});
+
+// Patrón: log requests específicos
+await mcp.call('add_advanced_interception_pattern', {
+  name: 'log-analytics',
+  urlPattern: '*analytics*',
+  method: 'POST',
+  action: 'log'
+});
+```
+
+### Ejemplo 12: CSS/JS injection pipeline
+```typescript
+// Inyectar CSS globalmente (se aplica a TODAS las páginas)
+await mcp.call('inject_css_global', {
+  css: `
+    body {
+      background-color: #f0f0f0 !important;
+    }
+    .ad-banner {
+      display: none !important;
+    }
+  `,
+  name: 'dark-mode-and-no-ads'
+});
+
+// Inyectar JavaScript que se ejecuta ANTES de cualquier script de la página
+await mcp.call('inject_js_global', {
+  javascript: `
+    // Interceptar fetch para logging
+    const originalFetch = window.fetch;
+    window.fetch = function(...args) {
+      console.log('Fetch intercepted:', args[0]);
+      return originalFetch.apply(this, args);
+    };
+    
+    // Agregar funciones helper globales
+    window.myCustomHelper = function() {
+      console.log('Helper function available globally!');
+    };
+  `,
+  name: 'fetch-interceptor',
+  runImmediately: true
+});
+
+// Listar inyecciones activas
+const injections = await mcp.call('list_injected_scripts', {});
+console.log('Active injections:', injections.injections);
+
+// Remover una inyección específica
+await mcp.call('remove_injection', {
+  identifier: 'injection-id-here'
+});
+
+// O limpiar todas
+await mcp.call('clear_all_injections', {});
+```
 const workers = await mcp.call('list_service_workers', {});
 console.log(workers.workers);
 
@@ -349,9 +558,15 @@ Puedes configurar:
 | Anti-detección | ✅ | ❌ | ⚠️ |
 | Service Workers | ✅ | ⚠️ | ⚠️ |
 | Exportar/importar sesiones | ✅ | ❌ | ❌ |
+| Response Interception | ✅ | ❌ | ⚠️ |
+| API Mocking | ✅ | ❌ | ⚠️ |
+| WebSocket Interception | ✅ | ❌ | ❌ |
+| HAR Recording | ✅ | ❌ | ⚠️ |
+| CSS/JS Injection | ✅ | ❌ | ⚠️ |
 | Delays human-like | ✅ | ❌ | ⚠️ |
 | Multi-tab | ✅ | ✅ | ✅ |
 | Screenshots | ✅ | ✅ | ✅ |
+| Total herramientas | **84** | ~20 | ~30 |
 
 ## 🐛 Troubleshooting
 
