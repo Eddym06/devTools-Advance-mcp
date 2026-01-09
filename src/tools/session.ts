@@ -11,7 +11,7 @@ export function createSessionTools(connector: ChromeConnector) {
     // Get cookies
     {
       name: 'get_cookies',
-      description: 'Get all cookies for the current page or domain',
+      description: 'Read cookies for the current page/domain to understand session/auth state.',
       inputSchema: z.object({
         url: z.string().optional().describe('URL to get cookies for (optional, uses current page if not specified)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -48,7 +48,7 @@ export function createSessionTools(connector: ChromeConnector) {
     // Set cookie
     {
       name: 'set_cookie',
-      description: 'Set a cookie for a specific domain',
+      description: 'Write/set a cookie for a domain to simulate login/session or tweak behavior.',
       inputSchema: z.object({
         name: z.string().describe('Cookie name'),
         value: z.string().describe('Cookie value'),

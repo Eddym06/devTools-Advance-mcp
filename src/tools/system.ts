@@ -12,7 +12,7 @@ export function createSystemTools(connector: ChromeConnector) {
     // List all Chrome targets (including extension service workers)
     {
       name: 'list_all_targets',
-      description: 'List all Chrome targets including extension service workers, background pages, and more',
+      description: 'Discover all Chrome targets (pages, iframes, workers, extension backgrounds/service workers) for deep inspection and debugging.',
       inputSchema: z.object({
         filterType: z.enum(['all', 'service_worker', 'background_page', 'page', 'iframe', 'worker']).optional().describe('Filter by target type')
       }),

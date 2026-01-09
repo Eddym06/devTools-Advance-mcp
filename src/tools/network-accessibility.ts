@@ -14,7 +14,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
     // Enable network interception
     {
       name: 'enable_network_interception',
-      description: 'Enable network request interception. Allows modifying requests/responses before they complete. Use patterns like "*.js", "*.css", "*api*" to filter which requests to intercept.',
+      description: 'Enable request interception to observe/modify/block network requests in real time. Accepts URL patterns (e.g., *.js, *.css, *api*) and keeps listening until disabled.',
       inputSchema: z.object({
         patterns: z.array(z.string()).default(['*']).describe('URL patterns to intercept (e.g., ["*.js", "*.css", "*api*"]). Use "*" for all requests.'),
         tabId: z.string().optional().describe('Tab ID (optional)')

@@ -11,7 +11,7 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
     // Apply stealth mode
     {
       name: 'enable_stealth_mode',
-      description: 'Apply anti-detection measures to make automation less detectable',
+      description: 'Reduce automation fingerprints so the page looks like a real user (navigator, plugins, permissions tweaks). Can run at any time and affects the current tab only.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
