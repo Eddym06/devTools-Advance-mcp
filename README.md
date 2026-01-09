@@ -38,6 +38,14 @@ Add this to your `mcp.json` config file:
 - Timezone y geolocalización configurable
 - Scripts anti-detección automáticos
 
+### ⏱️ Timeouts Inteligentes
+- **Timeouts configurables por operación**: La IA decide el timeout según complejidad
+- Defaults optimizados: 10-60 segundos según la herramienta
+- Prevención de cuelgues en operaciones pesadas
+- HAR exports: hasta 60s para archivos grandes
+- Inyección CSS/JS: 10-15s para scripts complejos
+- Parámetro `timeoutMs` en todas las herramientas críticas
+
 ### 🔒 Shadow Profile System
 - **Bypasses Chrome's Default profile debugging restriction**
 - Platform-specific cloning (robocopy on Windows, rsync on Unix)
@@ -349,9 +357,11 @@ console.log(`Total nodes: ${fullTree.totalNodes}`);
 ### Ejemplo 7: Interceptar y modificar respuestas
 ```typescript
 // Activar interceptación de RESPUESTAS (no solo requests)
+// timeoutMs: La IA puede aumentarlo si espera muchas requests
 await mcp.call('enable_response_interception', {
   patterns: ['*api.example.com/*'],
-  resourceTypes: ['XHR', 'Fetch']
+  resourceTypes: ['XHR', 'Fetch'],
+  timeoutMs: 15000  // 15s para APIs lentas
 });
 
 // Esperar a que se intercepte una respuesta
@@ -366,13 +376,15 @@ await mcp.call('modify_intercepted_response', {
   modifiedHeaders: {
     'Content-Type': 'application/json',
     'X-Modified': 'true'
-  }
+  },
+  timeoutMs: 20000  // 20s para respuestas grandes
 });
 ```
 
 ### Ejemplo 8: Mock API endpoints
 ```typescript
 // Crear un mock endpoint para API
+// timeoutMs: Para endpoints complejos con lógica pesada
 await mcp.call('create_mock_endpoint', {
   urlPattern: '*api.example.com/users*',
   responseBody: JSON.stringify([
@@ -385,7 +397,8 @@ await mcp.call('create_mock_endpoint', {
     'X-Mock': 'true'
   },
   latency: 500,  // Simular 500ms de latencia
-  method: 'GET'
+  method: 'GET',
+  timeoutMs: 12000  // 12s para registrar el mock
 });
 
 // Navegar y la API será interceptada automáticamente
@@ -439,9 +452,11 @@ const harData = await mcp.call('stop_har_recording', {});
 console.log(`Captured ${harData.entriesCount} requests`);
 
 // Exportar a archivo
+// timeoutMs: Importante aumentarlo si el HAR es muy grande (>50MB)
 await mcp.call('export_har_file', {
   filename: 'recording.har',
-  outputDir: './recordings'
+  outputDir: './recordings',
+  timeoutMs: 90000  // 90s para exportar HARs muy grandes
 });
 ```
 
@@ -477,6 +492,7 @@ await mcp.call('add_advanced_interception_pattern', {
 ### Ejemplo 12: CSS/JS injection pipeline
 ```typescript
 // Inyectar CSS globalmente (se aplica a TODAS las páginas)
+// timeoutMs: Aumentar si el CSS es muy grande o complejo
 await mcp.call('inject_css_global', {
   css: `
     body {
@@ -486,10 +502,12 @@ await mcp.call('inject_css_global', {
       display: none !important;
     }
   `,
-  name: 'dark-mode-and-no-ads'
+  name: 'dark-mode-and-no-ads',
+  timeoutMs: 8000  // 8s para CSS pequeño
 });
 
 // Inyectar JavaScript que se ejecuta ANTES de cualquier script de la página
+// timeoutMs: Critical para JS complejos con validación de sintaxis
 await mcp.call('inject_js_global', {
   javascript: `
     // Interceptar fetch para logging
@@ -505,7 +523,8 @@ await mcp.call('inject_js_global', {
     };
   `,
   name: 'fetch-interceptor',
-  runImmediately: true
+  runImmediately: true,
+  timeoutMs: 18000  // 18s para JS complejo con validación
 });
 
 // Listar inyecciones activas

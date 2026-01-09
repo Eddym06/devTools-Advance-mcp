@@ -57,19 +57,20 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       inputSchema: z.object({
         patterns: z.array(z.string()).default(['*']).describe('URL patterns to intercept'),
         resourceTypes: z.array(z.string()).optional().describe('Resource types to intercept (Document, Script, XHR, Fetch, etc.)'),
+        timeoutMs: z.number().default(10000).optional().describe('Operation timeout in milliseconds (default: 10000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ patterns = ['*'], resourceTypes, tabId }: any) => {
+      handler: async ({ patterns = ['*'], resourceTypes, timeoutMs = 10000, tabId }: any) => {
         try {
           await withTimeout(
             connector.verifyConnection(),
-            5000,
+            Math.min(timeoutMs, 5000),
             'Connection verification timeout'
           );
           
           const client = await withTimeout(
             connector.getTabClient(tabId),
-            5000,
+            Math.min(timeoutMs, 5000),
             'Failed to get tab client'
           );
           
@@ -79,7 +80,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             throw new Error('Network or Fetch domain not available. CDP connection may be unstable.');
           }
           
-          await withTimeout(Network.enable(), 5000, 'Network.enable timeout');
+          await withTimeout(Network.enable(), timeoutMs, 'Network.enable timeout');
           
           const requestPatterns: any[] = patterns.map((pattern: string) => {
             const p: any = {
@@ -94,7 +95,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           
           await withTimeout(
             Fetch.enable({ patterns: requestPatterns }),
-            5000,
+            timeoutMs,
             'Fetch.enable timeout'
           );
           
@@ -196,12 +197,13 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         modifiedBody: z.string().optional().describe('New response body (base64 if binary)'),
         modifiedHeaders: z.record(z.string()).optional().describe('New/modified response headers'),
         modifiedStatusCode: z.number().optional().describe('New status code (e.g., 200, 404, 500)'),
+        timeoutMs: z.number().default(15000).optional().describe('Operation timeout in milliseconds (default: 15000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ requestId, modifiedBody, modifiedHeaders, modifiedStatusCode, tabId }: any) => {
+      handler: async ({ requestId, modifiedBody, modifiedHeaders, modifiedStatusCode, timeoutMs = 15000, tabId }: any) => {
         try {
-          await withTimeout(connector.verifyConnection(), 3000, 'Connection verification timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 3000, 'Failed to get tab client');
+          await withTimeout(connector.verifyConnection(), Math.min(timeoutMs, 5000), 'Connection verification timeout');
+          const client = await withTimeout(connector.getTabClient(tabId), Math.min(timeoutMs, 5000), 'Failed to get tab client');
           const { Fetch } = client;
           
           if (!Fetch) {
@@ -236,7 +238,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
               responseHeaders: headers.length > 0 ? headers : undefined,
               body: modifiedBody ? Buffer.from(modifiedBody).toString('base64') : undefined
             }),
-            10000,
+            timeoutMs,
             'Fetch.fulfillRequest timeout'
           );
           
@@ -309,9 +311,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         headers: z.record(z.string()).optional().describe('Response headers'),
         latency: z.number().default(0).describe('Simulated latency in milliseconds'),
         method: z.string().optional().describe('HTTP method to match (GET, POST, etc.)'),
+        timeoutMs: z.number().default(15000).optional().describe('Operation timeout in milliseconds (default: 15000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ urlPattern, responseBody, statusCode = 200, headers = {}, latency = 0, method, tabId }: any) => {
+      handler: async ({ urlPattern, responseBody, statusCode = 200, headers = {}, latency = 0, method, timeoutMs = 15000, tabId }: any) => {
         try {
           // Validate inputs
           if (!urlPattern || urlPattern.trim() === '') {
@@ -336,12 +339,12 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             throw new Error('Network or Fetch domain not available');
           }
           
-          await withTimeout(Network.enable(), 5000, 'Network.enable timeout');
+          await withTimeout(Network.enable(), timeoutMs, 'Network.enable timeout');
           await withTimeout(
             Fetch.enable({
               patterns: [{ urlPattern, requestStage: 'Request' as const }]
             }),
-            5000,
+            timeoutMs,
             'Fetch.enable timeout'
           );
           
@@ -397,13 +400,13 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
                     responseHeaders,
                     body: Buffer.from(matchingMock.responseBody).toString('base64')
                   }),
-                  10000,
+                  timeoutMs,
                   'fulfillRequest timeout'
                 );
               } else {
                 await withTimeout(
                   Fetch.continueRequest({ requestId: params.requestId }),
-                  5000,
+                  Math.min(timeoutMs, 5000),
                   'continueRequest timeout'
                 );
               }
@@ -519,19 +522,20 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       description: 'Enable WebSocket interception to capture and modify WebSocket messages in real-time',
       inputSchema: z.object({
         urlPattern: z.string().optional().describe('URL pattern to intercept (optional, default all)'),
+        timeoutMs: z.number().default(10000).optional().describe('Operation timeout in milliseconds (default: 10000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ urlPattern, tabId }: any) => {
+      handler: async ({ urlPattern, timeoutMs = 10000, tabId }: any) => {
         try {
-          await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 5000, 'Get client timeout');
+          await withTimeout(connector.verifyConnection(), Math.min(timeoutMs, 5000), 'Connection timeout');
+          const client = await withTimeout(connector.getTabClient(tabId), Math.min(timeoutMs, 5000), 'Get client timeout');
           const { Network } = client;
           
           if (!Network) {
             throw new Error('Network domain not available');
           }
           
-          await withTimeout(Network.enable(), 5000, 'Network.enable timeout');
+          await withTimeout(Network.enable(), timeoutMs, 'Network.enable timeout');
           
           const effectiveTabId = tabId || 'default';
           if (!websocketConnections.has(effectiveTabId)) {
@@ -924,9 +928,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       inputSchema: z.object({
         filename: z.string().describe('Filename to save HAR (e.g., recording.har)'),
         outputDir: z.string().optional().describe('Output directory (default: current directory)'),
+        timeoutMs: z.number().default(60000).optional().describe('File write timeout in milliseconds (default: 60000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ filename, outputDir = '.', tabId }: any) => {
+      handler: async ({ filename, outputDir = '.', timeoutMs = 60000, tabId }: any) => {
         try {
           // Validate filename
           if (!filename || filename.trim() === '') {
@@ -977,7 +982,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           
           await withTimeout(
             fs.writeFile(filepath, JSON.stringify(har, null, 2), 'utf-8'),
-            30000,
+            timeoutMs,
             'File write timeout'
           );
           
@@ -1165,9 +1170,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       inputSchema: z.object({
         css: z.string().describe('CSS code to inject'),
         name: z.string().optional().describe('Name for this injection (for reference)'),
+        timeoutMs: z.number().default(10000).optional().describe('Operation timeout in milliseconds (default: 10000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ css, name, tabId }: any) => {
+      handler: async ({ css, name, timeoutMs = 10000, tabId }: any) => {
         try {
           if (!css || css.trim() === '') {
             return {
@@ -1213,7 +1219,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           
           const result: any = await withTimeout(
             Page.addScriptToEvaluateOnNewDocument({ source: script }),
-            5000,
+            timeoutMs,
             'addScriptToEvaluateOnNewDocument timeout'
           );
           
@@ -1226,10 +1232,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           // Also inject in current page
           const { Runtime } = client;
           if (Runtime) {
-            await withTimeout(Runtime.enable(), 3000, 'Runtime.enable timeout');
+            await withTimeout(Runtime.enable(), Math.min(timeoutMs, 3000), 'Runtime.enable timeout');
             await withTimeout(
               Runtime.evaluate({ expression: script }),
-              5000,
+              timeoutMs,
               'Runtime.evaluate timeout'
             );
           }
@@ -1258,9 +1264,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         javascript: z.string().describe('JavaScript code to inject'),
         name: z.string().optional().describe('Name for this injection (for reference)'),
         runImmediately: z.boolean().default(true).describe('Also run in current page'),
+        timeoutMs: z.number().default(15000).optional().describe('Operation timeout in milliseconds (default: 15000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ javascript, name, runImmediately = true, tabId }: any) => {
+      handler: async ({ javascript, name, runImmediately = true, timeoutMs = 15000, tabId }: any) => {
         try {
           if (!javascript || javascript.trim() === '') {
             return {
@@ -1269,15 +1276,15 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             };
           }
           
-          await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 5000, 'Get client timeout');
+          await withTimeout(connector.verifyConnection(), Math.min(timeoutMs, 5000), 'Connection timeout');
+          const client = await withTimeout(connector.getTabClient(tabId), Math.min(timeoutMs, 5000), 'Get client timeout');
           const { Page } = client;
           
           if (!Page) {
             throw new Error('Page domain not available');
           }
           
-          await withTimeout(Page.enable(), 5000, 'Page.enable timeout');
+          await withTimeout(Page.enable(), timeoutMs, 'Page.enable timeout');
           
           // Validate JavaScript syntax
           try {
@@ -1293,7 +1300,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           
           const result: any = await withTimeout(
             Page.addScriptToEvaluateOnNewDocument({ source: javascript }),
-            5000,
+            timeoutMs,
             'addScriptToEvaluateOnNewDocument timeout'
           );
           
@@ -1306,10 +1313,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           if (runImmediately) {
             const { Runtime } = client;
             if (Runtime) {
-              await withTimeout(Runtime.enable(), 3000, 'Runtime.enable timeout');
+              await withTimeout(Runtime.enable(), Math.min(timeoutMs, 3000), 'Runtime.enable timeout');
               const evalResult: any = await withTimeout(
                 Runtime.evaluate({ expression: javascript, returnByValue: false }),
-                10000,
+                timeoutMs,
                 'Runtime.evaluate timeout'
               );
               
