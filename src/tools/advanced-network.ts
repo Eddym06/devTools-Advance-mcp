@@ -53,7 +53,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
     
     {
       name: 'enable_response_interception',
-      description: 'Enable network traffic interception - captures/intercepts ALL network responses (API calls, requests, HTTP traffic). Use when user says "intercept traffic", "capture network requests", "monitor API calls", "see what packets are sent". Stays active until disabled. After enabling, use list_intercepted_responses to see captured traffic.',
+      description: 'Enable network traffic interception - captures/intercepts ALL network responses (API calls, requests, HTTP traffic). Use when user says "intercept traffic", "capture network requests", "monitor API calls", "see what packets are sent". Stays active until disabled. After enabling, use list_intercepted_responses to see captured traffic. WARNING: Cannot be used simultaneously with create_mock_endpoint - disable one before using the other.',
       inputSchema: z.object({
         patterns: z.array(z.string()).default(['*']).describe('URL patterns to intercept'),
         resourceTypes: z.array(z.string()).optional().describe('Resource types to intercept (Document, Script, XHR, Fetch, etc.)'),
@@ -62,6 +62,19 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       }),
       handler: async ({ patterns = ['*'], resourceTypes, timeoutMs = 10000, tabId }: any) => {
         try {
+          const tabKey = tabId || 'default';
+          
+          // Check for conflicts with mocks
+          if (mockEndpoints.has(tabKey) && mockEndpoints.get(tabKey)!.length > 0) {
+            console.error('⚠️ WARNING: Mock endpoints are already active. This may cause conflicts.');
+            return {
+              success: false,
+              error: 'Conflict detected: Mock endpoints are already active',
+              suggestion: 'Call clear_all_mocks first, then enable response interception',
+              activeMocks: mockEndpoints.get(tabKey)!.length
+            };
+          }
+          
           await withTimeout(
             connector.verifyConnection(),
             Math.min(timeoutMs, 5000),
@@ -322,7 +335,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'create_mock_endpoint',
-      description: 'Create fake/mock API endpoint - intercepts requests to a URL and responds with fake data (without hitting real server). Use for testing, simulating APIs, or replacing real responses. Use when user says "mock the API", "fake the response", "simulate API call", "respond with fake data".',
+      description: 'Create fake/mock API endpoint - intercepts requests to a URL and responds with fake data (without hitting real server). Use for testing, simulating APIs, or replacing real responses. Use when user says "mock the API", "fake the response", "simulate API call", "respond with fake data". WARNING: If response interception is active, disable it first with disable_response_interception, otherwise the mock may not work correctly.',
       inputSchema: z.object({
         urlPattern: z.string().describe('URL pattern to mock (supports * wildcards)'),
         responseBody: z.string().describe('Response body (JSON string, HTML, etc.)'),
@@ -335,6 +348,19 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       }),
       handler: async ({ urlPattern, responseBody, statusCode = 200, headers = {}, latency = 0, method, timeoutMs = 15000, tabId }: any) => {
         try {
+          const tabKey = tabId || 'default';
+          
+          // Check for conflicts with response interception
+          if (interceptedResponses.has(tabKey) && interceptedResponses.get(tabKey)!.size > 0) {
+            console.error('⚠️ WARNING: Response interception is already active. This may cause conflicts.');
+            return {
+              success: false,
+              error: 'Conflict detected: Response interception is already active',
+              suggestion: 'Call disable_response_interception first, then create mock endpoints',
+              interceptedCount: interceptedResponses.get(tabKey)!.size
+            };
+          }
+          
           // Validate inputs
           if (!urlPattern || urlPattern.trim() === '') {
             return {
@@ -399,18 +425,40 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
               
               const matchingMock = mockEndpoints.get(effectiveTabId)?.find((m: any) => {
                 try {
-                  const urlMatch = url.includes(urlPattern.replace('*', '')) || 
-                                  new RegExp(urlPattern.replace(/\*/g, '.*')).test(url);
-                  const methodMatch = !m.method || m.method === requestMethod;
+                  // Better pattern matching
+                  let urlMatch = false;
+                  
+                  // Convert glob pattern to regex
+                  const pattern = m.urlPattern
+                    .replace(/\./g, '\\.')  // Escape dots
+                    .replace(/\*/g, '.*')   // * becomes .*
+                    .replace(/\?/g, '.');   // ? becomes .
+                  
+                  const regex = new RegExp(`^${pattern}$`, 'i');
+                  urlMatch = regex.test(url);
+                  
+                  // Fallback: simple contains check
+                  if (!urlMatch && m.urlPattern.includes('*')) {
+                    const plainPart = m.urlPattern.replace(/\*/g, '');
+                    urlMatch = url.includes(plainPart);
+                  }
+                  
+                  const methodMatch = !m.method || m.method.toUpperCase() === requestMethod.toUpperCase();
+                  
+                  if (urlMatch && methodMatch) {
+                    console.error(`[Mock Matcher] ✅ Pattern "${m.urlPattern}" matched URL: ${url}`);
+                  }
+                  
                   return urlMatch && methodMatch;
                 } catch (e) {
+                  console.error('[Mock Matcher] ❌ Pattern matching error:', e);
                   return false;
                 }
               });
               
               if (matchingMock) {
                 matchingMock.callCount++;
-                console.error(`[Mock Endpoint] Intercepted ${requestMethod} ${url} -> Responding with mock data`);
+                console.error(`[Mock Endpoint] 🎯 Intercepted ${requestMethod} ${url} -> Responding with mock data`);
                 
                 if (matchingMock.latency > 0) {
                   await new Promise(resolve => setTimeout(resolve, matchingMock.latency));
@@ -847,7 +895,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'start_har_recording',
-      description: 'Start recording all network traffic in HAR (HTTP Archive) format',
+      description: 'Start recording/capturing ALL network traffic in HAR format (HTTP Archive). MUST be called BEFORE navigating/actions to capture traffic. Use when user says "record the traffic", "start capturing network", "save HAR file". After recording, use stop_har_recording and export_har_file to save the data.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
@@ -974,7 +1022,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'export_har_file',
-      description: 'Export HAR recording to a file',
+      description: 'Export/save HAR recording to a file. REQUIRES: Must call start_har_recording first, then do actions, then stop_har_recording, and finally call this to save. Use when user says "save the HAR", "export the recording", "save network traffic to file".',
       inputSchema: z.object({
         filename: z.string().describe('Filename to save HAR (e.g., recording.har)'),
         outputDir: z.string().optional().describe('Output directory (default: current directory)'),
