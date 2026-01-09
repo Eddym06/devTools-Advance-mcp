@@ -25,26 +25,6 @@ const harRecordings = new Map<string, any>();
 // Storage for injected scripts
 const injectedScripts = new Map<string, string[]>();
 
-/**
- * Helper function to wrap tool handlers with error handling
- */
-async function safeHandler<T>(
-  operation: () => Promise<T>,
-  errorMessage: string = 'Operation failed'
-): Promise<T | { success: false; error: string; details?: string; suggestion?: string }> {
-  try {
-    return await operation();
-  } catch (error: any) {
-    console.error(`[Advanced Network Tools] ${errorMessage}:`, error);
-    return {
-      success: false,
-      error: error.message || errorMessage,
-      details: error.stack,
-      suggestion: 'Check Chrome connection and ensure the page is loaded'
-    };
-  }
-}
-
 export function createAdvancedNetworkTools(connector: ChromeConnector) {
   return [
     // ═══════════════════════════════════════════════════════════════════
@@ -265,33 +245,19 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
-        try {
-          await withTimeout(connector.verifyConnection(), 3000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 3000, 'Get client timeout');
-          const { Fetch } = client;
-          
-          if (Fetch) {
-            await withTimeout(Fetch.disable(), 3000, 'Fetch.disable timeout');
-          }
-          
-          const effectiveTabId = tabId || 'default';
-          interceptedResponses.delete(effectiveTabId);
-          
-          return {
-            success: true,
-            message: 'Response interception disabled'
-          };
-        } catch (error: any) {
-          // Even if disable fails, clean up local state
-          const effectiveTabId = tabId || 'default';
-          interceptedResponses.delete(effectiveTabId);
-          
-          return {
-            success: true,
-            message: 'Response interception disabled (with errors)',
-            warning: error.message
-          };
-        }
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Fetch } = client;
+        
+        await Fetch.disable();
+        
+        const effectiveTabId = tabId || 'default';
+        interceptedResponses.delete(effectiveTabId);
+        
+        return {
+          success: true,
+          message: 'Response interception disabled'
+        };
       }
     },
 
@@ -312,129 +278,76 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ urlPattern, responseBody, statusCode = 200, headers = {}, latency = 0, method, tabId }: any) => {
-        try {
-          // Validate inputs
-          if (!urlPattern || urlPattern.trim() === '') {
-            return {
-              success: false,
-              error: 'urlPattern is required and cannot be empty'
-            };
-          }
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Network, Fetch } = client;
+        
+        await Network.enable();
+        await Fetch.enable({
+          patterns: [{ urlPattern, requestStage: 'Request' as const }]
+        });
+        
+        const effectiveTabId = tabId || 'default';
+        if (!mockEndpoints.has(effectiveTabId)) {
+          mockEndpoints.set(effectiveTabId, []);
+        }
+        
+        const mock = {
+          urlPattern,
+          responseBody,
+          statusCode,
+          headers,
+          latency,
+          method,
+          callCount: 0
+        };
+        
+        mockEndpoints.get(effectiveTabId)!.push(mock);
+        
+        Fetch.requestPaused(async (params: any) => {
+          const url = params.request.url;
+          const requestMethod = params.request.method;
           
-          if (latency < 0 || latency > 60000) {
-            return {
-              success: false,
-              error: 'latency must be between 0 and 60000ms'
-            };
-          }
-          
-          await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 5000, 'Get client timeout');
-          const { Network, Fetch } = client;
-          
-          if (!Network || !Fetch) {
-            throw new Error('Network or Fetch domain not available');
-          }
-          
-          await withTimeout(Network.enable(), 5000, 'Network.enable timeout');
-          await withTimeout(
-            Fetch.enable({
-              patterns: [{ urlPattern, requestStage: 'Request' as const }]
-            }),
-            5000,
-            'Fetch.enable timeout'
-          );
-          
-          const effectiveTabId = tabId || 'default';
-          if (!mockEndpoints.has(effectiveTabId)) {
-            mockEndpoints.set(effectiveTabId, []);
-          }
-          
-          const mock = {
-            urlPattern,
-            responseBody,
-            statusCode,
-            headers: headers || {},
-            latency,
-            method,
-            callCount: 0
-          };
-          
-          mockEndpoints.get(effectiveTabId)!.push(mock);
-          
-          Fetch.requestPaused(async (params: any) => {
-            try {
-              const url = params.request.url;
-              const requestMethod = params.request.method;
-              
-              const matchingMock = mockEndpoints.get(effectiveTabId)?.find((m: any) => {
-                try {
-                  const urlMatch = url.includes(urlPattern.replace('*', '')) || 
-                                  new RegExp(urlPattern.replace(/\*/g, '.*')).test(url);
-                  const methodMatch = !m.method || m.method === requestMethod;
-                  return urlMatch && methodMatch;
-                } catch (e) {
-                  return false;
-                }
-              });
-              
-              if (matchingMock) {
-                matchingMock.callCount++;
-                
-                if (matchingMock.latency > 0) {
-                  await new Promise(resolve => setTimeout(resolve, matchingMock.latency));
-                }
-                
-                const responseHeaders: any[] = [
-                  { name: 'Content-Type', value: 'application/json' },
-                  ...Object.entries(matchingMock.headers || {}).map(([name, value]) => ({ name, value }))
-                ];
-                
-                await withTimeout(
-                  Fetch.fulfillRequest({
-                    requestId: params.requestId,
-                    responseCode: matchingMock.statusCode,
-                    responseHeaders,
-                    body: Buffer.from(matchingMock.responseBody).toString('base64')
-                  }),
-                  10000,
-                  'fulfillRequest timeout'
-                );
-              } else {
-                await withTimeout(
-                  Fetch.continueRequest({ requestId: params.requestId }),
-                  5000,
-                  'continueRequest timeout'
-                );
-              }
-            } catch (e) {
-              console.error('[Mock Endpoint] Error processing request:', e);
-              try {
-                await Fetch.continueRequest({ requestId: params.requestId });
-              } catch (continueError) {
-                console.error('[Mock Endpoint] Failed to continue request:', continueError);
-              }
-            }
+          const matchingMock = mockEndpoints.get(effectiveTabId)?.find((m: any) => {
+            const urlMatch = url.includes(urlPattern.replace('*', '')) || 
+                            new RegExp(urlPattern.replace(/\*/g, '.*')).test(url);
+            const methodMatch = !m.method || m.method === requestMethod;
+            return urlMatch && methodMatch;
           });
           
-          return {
-            success: true,
-            message: `Mock endpoint created for ${urlPattern}`,
-            mock: {
-              urlPattern,
-              statusCode,
-              latency,
-              method: method || 'any'
+          if (matchingMock) {
+            matchingMock.callCount++;
+            
+            if (matchingMock.latency > 0) {
+              await new Promise(resolve => setTimeout(resolve, matchingMock.latency));
             }
-          };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error.message || 'Failed to create mock endpoint',
-            details: error.stack,
-            suggestion: 'Ensure Chrome is running and page is loaded'
-          };
-        }
+            
+            const responseHeaders: any[] = [
+              { name: 'Content-Type', value: 'application/json' },
+              ...Object.entries(matchingMock.headers).map(([name, value]) => ({ name, value }))
+            ];
+            
+            await Fetch.fulfillRequest({
+              requestId: params.requestId,
+              responseCode: matchingMock.statusCode,
+              responseHeaders,
+              body: Buffer.from(matchingMock.responseBody).toString('base64')
+            });
+          } else {
+            await Fetch.continueRequest({ requestId: params.requestId });
+          }
+        });
+        
+        return {
+          success: true,
+          message: `Mock endpoint created for ${urlPattern}`,
+          mock: {
+            urlPattern,
+            statusCode,
+            latency,
+            method: method || 'any'
+          }
+        };
       }
     },
 
@@ -522,105 +435,68 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ urlPattern, tabId }: any) => {
-        try {
-          await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 5000, 'Get client timeout');
-          const { Network } = client;
-          
-          if (!Network) {
-            throw new Error('Network domain not available');
-          }
-          
-          await withTimeout(Network.enable(), 5000, 'Network.enable timeout');
-          
-          const effectiveTabId = tabId || 'default';
-          if (!websocketConnections.has(effectiveTabId)) {
-            websocketConnections.set(effectiveTabId, []);
-          }
-          if (!websocketMessages.has(effectiveTabId)) {
-            websocketMessages.set(effectiveTabId, []);
-          }
-          
-          Network.webSocketCreated((params: any) => {
-            try {
-              const conns = websocketConnections.get(effectiveTabId);
-              if (conns) {
-                conns.push({
-                  requestId: params.requestId,
-                  url: params.url,
-                  initiator: params.initiator,
-                  timestamp: Date.now()
-                });
-              }
-            } catch (e) {
-              console.error('[WebSocket] Error storing connection:', e);
-            }
-          });
-          
-          Network.webSocketFrameSent((params: any) => {
-            try {
-              const messages = websocketMessages.get(effectiveTabId);
-              if (messages) {
-                messages.push({
-                  requestId: params.requestId,
-                  timestamp: params.timestamp,
-                  direction: 'sent',
-                  opcode: params.response?.opcode,
-                  mask: params.response?.mask,
-                  payloadData: params.response?.payloadData
-                });
-              }
-            } catch (e) {
-              console.error('[WebSocket] Error storing sent message:', e);
-            }
-          });
-          
-          Network.webSocketFrameReceived((params: any) => {
-            try {
-              const messages = websocketMessages.get(effectiveTabId);
-              if (messages) {
-                messages.push({
-                  requestId: params.requestId,
-                  timestamp: params.timestamp,
-                  direction: 'received',
-                  opcode: params.response?.opcode,
-                  mask: params.response?.mask,
-                  payloadData: params.response?.payloadData
-                });
-              }
-            } catch (e) {
-              console.error('[WebSocket] Error storing received message:', e);
-            }
-          });
-          
-          Network.webSocketClosed((params: any) => {
-            try {
-              const conns = websocketConnections.get(effectiveTabId);
-              if (conns) {
-                const conn = conns.find((c: any) => c.requestId === params.requestId);
-                if (conn) {
-                  conn.closed = true;
-                  conn.closedAt = Date.now();
-                }
-              }
-            } catch (e) {
-              console.error('[WebSocket] Error marking connection closed:', e);
-            }
-          });
-          
-          return {
-            success: true,
-            message: 'WebSocket interception enabled',
-            pattern: urlPattern || 'all'
-          };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error.message || 'Failed to enable WebSocket interception',
-            details: error.stack,
-            suggestion: 'Ensure Chrome is running and page is loaded'
-          };
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Network } = client;
+        
+        await Network.enable();
+        
+        const effectiveTabId = tabId || 'default';
+        if (!websocketConnections.has(effectiveTabId)) {
+          websocketConnections.set(effectiveTabId, []);
         }
+        if (!websocketMessages.has(effectiveTabId)) {
+          websocketMessages.set(effectiveTabId, []);
+        }
+        
+        Network.webSocketCreated((params: any) => {
+          const conns = websocketConnections.get(effectiveTabId)!;
+          conns.push({
+            requestId: params.requestId,
+            url: params.url,
+            initiator: params.initiator,
+            timestamp: Date.now()
+          });
+        });
+        
+        Network.webSocketFrameSent((params: any) => {
+          const messages = websocketMessages.get(effectiveTabId)!;
+          messages.push({
+            requestId: params.requestId,
+            timestamp: params.timestamp,
+            direction: 'sent',
+            opcode: params.response.opcode,
+            mask: params.response.mask,
+            payloadData: params.response.payloadData
+          });
+        });
+        
+        Network.webSocketFrameReceived((params: any) => {
+          const messages = websocketMessages.get(effectiveTabId)!;
+          messages.push({
+            requestId: params.requestId,
+            timestamp: params.timestamp,
+            direction: 'received',
+            opcode: params.response.opcode,
+            mask: params.response.mask,
+            payloadData: params.response.payloadData
+          });
+        });
+        
+        Network.webSocketClosed((params: any) => {
+          const conns = websocketConnections.get(effectiveTabId)!;
+          const conn = conns.find((c: any) => c.requestId === params.requestId);
+          if (conn) {
+            conn.closed = true;
+            conn.closedAt = Date.now();
+          }
+        });
+        
+        return {
+          success: true,
+          message: 'WebSocket interception enabled',
+          pattern: urlPattern || 'all'
+        };
       }
     },
 
@@ -694,77 +570,45 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ requestId, message, tabId }: any) => {
-        try {
-          if (!message || message.trim() === '') {
-            return {
-              success: false,
-              error: 'message cannot be empty'
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Network } = client;
+        
+        // Note: CDP doesn't directly support sending WS messages, 
+        // but we can execute JavaScript to do it
+        const { Runtime } = client;
+        await Runtime.enable();
+        
+        const script = `
+          (function() {
+            // Find the WebSocket by inspecting global WebSocket instances
+            // This is a workaround since CDP doesn't expose WS instances
+            const originalSend = WebSocket.prototype.send;
+            let foundWS = null;
+            
+            WebSocket.prototype.send = function(...args) {
+              foundWS = this;
+              return originalSend.apply(this, args);
             };
-          }
-          
-          await withTimeout(connector.verifyConnection(), 3000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 3000, 'Get client timeout');
-          const { Runtime } = client;
-          
-          if (!Runtime) {
-            throw new Error('Runtime domain not available');
-          }
-          
-          await withTimeout(Runtime.enable(), 3000, 'Runtime.enable timeout');
-          
-          // Escape message for JavaScript injection
-          const escapedMessage = message.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-          
-          const script = `
-            (function() {
-              // Find the WebSocket by inspecting global WebSocket instances
-              // This is a workaround since CDP doesn't expose WS instances
-              const originalSend = WebSocket.prototype.send;
-              let foundWS = null;
-              
-              WebSocket.prototype.send = function(...args) {
-                foundWS = this;
-                return originalSend.apply(this, args);
-              };
-              
-              // Trigger to get reference
-              setTimeout(() => {
-                if (foundWS && foundWS.readyState === WebSocket.OPEN) {
-                  try {
-                    foundWS.send('${escapedMessage}');
-                    return 'success';
-                  } catch (e) {
-                    return 'error: ' + e.message;
-                  }
-                } else {
-                  return 'error: WebSocket not found or not open';
-                }
-              }, 100);
-              
-              return 'Message injection attempted';
-            })();
-          `;
-          
-          const result: any = await withTimeout(
-            Runtime.evaluate({ expression: script }),
-            5000,
-            'Runtime.evaluate timeout'
-          );
-          
-          return {
-            success: true,
-            message: 'WebSocket message injection attempted',
-            note: 'CDP limitation: Direct WS injection requires JavaScript workaround',
-            result: result.result?.value
-          };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error.message || 'Failed to send WebSocket message',
-            details: error.stack,
-            suggestion: 'Ensure WebSocket connection is active and page has a WebSocket instance'
-          };
-        }
+            
+            // Trigger to get reference
+            setTimeout(() => {
+              if (foundWS && foundWS.readyState === WebSocket.OPEN) {
+                foundWS.send('${message.replace(/'/g, "\\'")}');
+              }
+            }, 100);
+            
+            return 'Message injection attempted';
+          })();
+        `;
+        
+        const result = await Runtime.evaluate({ expression: script });
+        
+        return {
+          success: true,
+          message: 'WebSocket message injection attempted',
+          note: 'CDP limitation: Direct WS injection requires JavaScript workaround'
+        };
       }
     },
 
@@ -927,74 +771,35 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ filename, outputDir = '.', tabId }: any) => {
-        try {
-          // Validate filename
-          if (!filename || filename.trim() === '') {
-            return {
-              success: false,
-              error: 'filename is required'
-            };
-          }
-          
-          if (!filename.endsWith('.har')) {
-            filename += '.har';
-          }
-          
-          await withTimeout(connector.verifyConnection(), 3000, 'Connection timeout');
-          const effectiveTabId = tabId || 'default';
-          const recording = harRecordings.get(effectiveTabId);
-          
-          if (!recording) {
-            return {
-              success: false,
-              error: 'No active HAR recording to export',
-              suggestion: 'Use start_har_recording first before exporting'
-            };
-          }
-          
-          const har = {
-            log: {
-              version: '1.2',
-              creator: {
-                name: 'Custom Chrome MCP',
-                version: '1.0.10'
-              },
-              pages: recording.pages || [],
-              entries: recording.entries || []
-            }
-          };
-          
-          // Ensure directory exists
-          try {
-            await fs.mkdir(outputDir, { recursive: true });
-          } catch (mkdirError: any) {
-            if (mkdirError.code !== 'EEXIST') {
-              throw new Error(`Failed to create directory: ${mkdirError.message}`);
-            }
-          }
-          
-          const filepath = path.join(outputDir, filename);
-          
-          await withTimeout(
-            fs.writeFile(filepath, JSON.stringify(har, null, 2), 'utf-8'),
-            30000,
-            'File write timeout'
-          );
-          
-          return {
-            success: true,
-            message: `HAR file exported to ${filepath}`,
-            filepath,
-            entriesCount: recording.entries?.length || 0
-          };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error.message || 'Failed to export HAR file',
-            details: error.stack,
-            suggestion: 'Check directory permissions and disk space'
-          };
+        await connector.verifyConnection();
+        const effectiveTabId = tabId || 'default';
+        const recording = harRecordings.get(effectiveTabId);
+        
+        if (!recording) {
+          throw new Error('No active HAR recording to export');
         }
+        
+        const har = {
+          log: {
+            version: '1.2',
+            creator: {
+              name: 'Custom Chrome MCP',
+              version: '1.0.9'
+            },
+            pages: recording.pages,
+            entries: recording.entries
+          }
+        };
+        
+        const filepath = path.join(outputDir, filename);
+        await fs.writeFile(filepath, JSON.stringify(har, null, 2), 'utf-8');
+        
+        return {
+          success: true,
+          message: `HAR file exported to ${filepath}`,
+          filepath,
+          entriesCount: recording.entries.length
+        };
       }
     },
 
@@ -1168,86 +973,42 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ css, name, tabId }: any) => {
-        try {
-          if (!css || css.trim() === '') {
-            return {
-              success: false,
-              error: 'css cannot be empty'
-            };
-          }
-          
-          await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 5000, 'Get client timeout');
-          const { Page } = client;
-          
-          if (!Page) {
-            throw new Error('Page domain not available');
-          }
-          
-          await withTimeout(Page.enable(), 5000, 'Page.enable timeout');
-          
-          // Escape CSS safely
-          const escapedCSS = css.replace(/`/g, '\\`').replace(/\$/g, '\\$');
-          const escapedName = (name || 'unnamed').replace(/'/g, "\\'");
-          
-          const script = `
-            (function() {
-              try {
-                const style = document.createElement('style');
-                style.textContent = \`${escapedCSS}\`;
-                style.setAttribute('data-mcp-injection', '${escapedName}');
-                if (document.head) {
-                  document.head.appendChild(style);
-                } else {
-                  // Fallback if head doesn't exist yet
-                  document.addEventListener('DOMContentLoaded', () => {
-                    document.head.appendChild(style);
-                  });
-                }
-                return 'success';
-              } catch (e) {
-                return 'error: ' + e.message;
-              }
-            })();
-          `;
-          
-          const result: any = await withTimeout(
-            Page.addScriptToEvaluateOnNewDocument({ source: script }),
-            5000,
-            'addScriptToEvaluateOnNewDocument timeout'
-          );
-          
-          const effectiveTabId = tabId || 'default';
-          if (!injectedScripts.has(effectiveTabId)) {
-            injectedScripts.set(effectiveTabId, []);
-          }
-          injectedScripts.get(effectiveTabId)!.push(result.identifier);
-          
-          // Also inject in current page
-          const { Runtime } = client;
-          if (Runtime) {
-            await withTimeout(Runtime.enable(), 3000, 'Runtime.enable timeout');
-            await withTimeout(
-              Runtime.evaluate({ expression: script }),
-              5000,
-              'Runtime.evaluate timeout'
-            );
-          }
-          
-          return {
-            success: true,
-            message: 'CSS injected globally',
-            identifier: result.identifier,
-            name: name || 'unnamed'
-          };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error.message || 'Failed to inject CSS',
-            details: error.stack,
-            suggestion: 'Check CSS syntax and ensure page is loaded'
-          };
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Page } = client;
+        
+        await Page.enable();
+        
+        const script = `
+          (function() {
+            const style = document.createElement('style');
+            style.textContent = \`${css.replace(/`/g, '\\`')}\`;
+            style.setAttribute('data-mcp-injection', '${name || 'unnamed'}');
+            document.head.appendChild(style);
+          })();
+        `;
+        
+        const result = await Page.addScriptToEvaluateOnNewDocument({
+          source: script
+        });
+        
+        const effectiveTabId = tabId || 'default';
+        if (!injectedScripts.has(effectiveTabId)) {
+          injectedScripts.set(effectiveTabId, []);
         }
+        injectedScripts.get(effectiveTabId)!.push(result.identifier);
+        
+        // Also inject in current page
+        const { Runtime } = client;
+        await Runtime.enable();
+        await Runtime.evaluate({ expression: script });
+        
+        return {
+          success: true,
+          message: 'CSS injected globally',
+          identifier: result.identifier,
+          name: name || 'unnamed'
+        };
       }
     },
 
@@ -1261,86 +1022,35 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ javascript, name, runImmediately = true, tabId }: any) => {
-        try {
-          if (!javascript || javascript.trim() === '') {
-            return {
-              success: false,
-              error: 'javascript cannot be empty'
-            };
-          }
-          
-          await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 5000, 'Get client timeout');
-          const { Page } = client;
-          
-          if (!Page) {
-            throw new Error('Page domain not available');
-          }
-          
-          await withTimeout(Page.enable(), 5000, 'Page.enable timeout');
-          
-          // Validate JavaScript syntax
-          try {
-            new Function(javascript);
-          } catch (syntaxError: any) {
-            return {
-              success: false,
-              error: 'JavaScript syntax error',
-              details: syntaxError.message,
-              suggestion: 'Check your JavaScript code for syntax errors'
-            };
-          }
-          
-          const result: any = await withTimeout(
-            Page.addScriptToEvaluateOnNewDocument({ source: javascript }),
-            5000,
-            'addScriptToEvaluateOnNewDocument timeout'
-          );
-          
-          const effectiveTabId = tabId || 'default';
-          if (!injectedScripts.has(effectiveTabId)) {
-            injectedScripts.set(effectiveTabId, []);
-          }
-          injectedScripts.get(effectiveTabId)!.push(result.identifier);
-          
-          if (runImmediately) {
-            const { Runtime } = client;
-            if (Runtime) {
-              await withTimeout(Runtime.enable(), 3000, 'Runtime.enable timeout');
-              const evalResult: any = await withTimeout(
-                Runtime.evaluate({ expression: javascript, returnByValue: false }),
-                10000,
-                'Runtime.evaluate timeout'
-              );
-              
-              if (evalResult.exceptionDetails) {
-                return {
-                  success: true,
-                  message: 'JavaScript injected globally but execution failed in current page',
-                  identifier: result.identifier,
-                  name: name || 'unnamed',
-                  executionError: evalResult.exceptionDetails.text,
-                  runImmediately
-                };
-              }
-            }
-          }
-          
-          return {
-            success: true,
-            message: 'JavaScript injected globally',
-            identifier: result.identifier,
-            name: name || 'unnamed',
-            runImmediately
-          };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error.message || 'Failed to inject JavaScript',
-            details: error.stack,
-            suggestion: 'Check JavaScript syntax and ensure page is loaded'
-          };
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Page } = client;
+        
+        await Page.enable();
+        
+        const result = await Page.addScriptToEvaluateOnNewDocument({
+          source: javascript
+        });
+        
+        const effectiveTabId = tabId || 'default';
+        if (!injectedScripts.has(effectiveTabId)) {
+          injectedScripts.set(effectiveTabId, []);
         }
+        injectedScripts.get(effectiveTabId)!.push(result.identifier);
+        
+        if (runImmediately) {
+          const { Runtime } = client;
+          await Runtime.enable();
+          await Runtime.evaluate({ expression: javascript });
+        }
+        
+        return {
+          success: true,
+          message: 'JavaScript injected globally',
+          identifier: result.identifier,
+          name: name || 'unnamed',
+          runImmediately
+        };
       }
     },
 
