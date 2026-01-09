@@ -181,12 +181,21 @@ El MCP se conectará automáticamente a tu Chrome y tendrás acceso a 44 herrami
 - `skip_waiting` - Skip waiting
 - `get_sw_caches` - Obtener cachés
 
-### Captura (5 herramientas)
+### Captura (7 herramientas)
 - `screenshot` - Captura de pantalla
 - `get_html` - Obtener HTML
 - `print_to_pdf` - Exportar a PDF
 - `get_page_metrics` - Métricas de página
-- `get_accessibility_tree` - Árbol a11y
+- `get_accessibility_tree` - Árbol a11y completo
+- `get_accessibility_snapshot` - Snapshot Playwright-style
+
+### Network Interception (8 herramientas)
+- `enable_network_interception` - Activar interceptación
+- `list_intercepted_requests` - Listar requests interceptados
+- `modify_intercepted_request` - Modificar request (headers, URL, body)
+- `fail_intercepted_request` - Bloquear request (ads, tracking)
+- `continue_intercepted_request` - Continuar sin modificar
+- `disable_network_interception` - Desactivar interceptación
 
 ### Sesiones & Cookies (9 herramientas)
 - `get_cookies` - Obtener cookies
@@ -248,6 +257,60 @@ await mcp.call('import_session', { sessionData });
 ### Ejemplo 4: Gestionar Service Workers
 ```typescript
 // Listar todos los service workers
+const workers = await mcp.call('list_service_workers', {});
+console.log(workers);
+
+// Actualizar un service worker
+await mcp.call('update_service_worker', { 
+  scopeURL: 'https://example.com/' 
+});
+```
+
+### Ejemplo 5: Interceptar y modificar requests
+```typescript
+// Activar interceptación para archivos JS y CSS
+await mcp.call('enable_network_interception', {
+  patterns: ['*.js', '*.css', '*analytics*']
+});
+
+// Listar requests interceptados
+const intercepted = await mcp.call('list_intercepted_requests', {});
+console.log('Intercepted:', intercepted.interceptedRequests);
+
+// Bloquear un request de analytics
+await mcp.call('fail_intercepted_request', {
+  requestId: 'some-request-id',
+  errorReason: 'BlockedByClient'
+});
+
+// Modificar headers de un request
+await mcp.call('modify_intercepted_request', {
+  requestId: 'another-request-id',
+  modifiedHeaders: {
+    'User-Agent': 'Custom Agent',
+    'X-Custom-Header': 'Value'
+  }
+});
+
+// Desactivar cuando termines
+await mcp.call('disable_network_interception', {});
+```
+
+### Ejemplo 6: Obtener árbol de accesibilidad
+```typescript
+// Obtener snapshot estilo Playwright (fácil de leer)
+const snapshot = await mcp.call('get_accessibility_snapshot', {
+  interestingOnly: true  // Solo botones, links, inputs, etc.
+});
+console.log(snapshot.snapshot);
+
+// Obtener árbol completo (más detallado)
+const fullTree = await mcp.call('get_accessibility_tree', {
+  depth: 5,  // Profundidad máxima
+  includeIgnored: false
+});
+console.log(`Total nodes: ${fullTree.totalNodes}`);
+```
 const workers = await mcp.call('list_service_workers', {});
 console.log(workers.workers);
 

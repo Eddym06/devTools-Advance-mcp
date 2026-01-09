@@ -21,6 +21,7 @@ import { createCaptureTools } from './tools/capture.js';
 import { createSessionTools } from './tools/session.js';
 import { createSystemTools } from './tools/system.js';
 import { createPlaywrightLauncherTools } from './tools/playwright-launcher.js';
+import { createNetworkAccessibilityTools } from './tools/network-accessibility.js';
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -53,6 +54,7 @@ const allTools = [
   ...createCaptureTools(connector),
   ...createSessionTools(connector),
   ...createSystemTools(connector),
+  ...createNetworkAccessibilityTools(connector),  // Network interception + Accessibility tree
 ];
 
 // Create tool map for quick lookup
