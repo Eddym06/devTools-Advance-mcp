@@ -11,7 +11,7 @@ export function createNavigationTools(connector: ChromeConnector) {
     // Navigate to URL
     {
       name: 'navigate',
-      description: 'Opens and navigates to any URL/website in browser (apple.com, google.com, etc.). USE THIS WHEN: user says "go to", "open", "navigate to", "visit", "load page", "browse to" any website. Handles http://, https://, or plain domain names. 📋 PROPER WORKFLOW: 1️⃣ navigate to URL → 2️⃣ wait_for_load_state (networkidle) → 3️⃣ get_html or screenshot to analyze page → 4️⃣ THEN interact.',
+      description: '🌐 PRIMARY NAVIGATION TOOL - Opens/loads/visits any URL. ✅ USE THIS for: "go to", "open", "navigate to", "visit", "load page", "browse to" any website. Navigates in CURRENT tab (doesn\'t create new tab). Examples: "go to apple.com", "navigate to google.com", "visit youtube.com". 📋 WORKFLOW: 1️⃣ navigate → 2️⃣ wait_for_load_state(networkidle) → 3️⃣ get_html (analyze) → 4️⃣ interact. ❌ DO NOT use create_tab for simple navigation!',
       inputSchema: z.object({
         url: z.string().describe('URL to navigate to'),
         tabId: z.string().optional().describe('Tab ID (optional, uses current tab if not specified)'),
@@ -169,7 +169,7 @@ export function createNavigationTools(connector: ChromeConnector) {
     // Create new tab
     {
       name: 'create_tab',
-      description: 'Opens a new browser tab/page, optionally with specified URL. USE THIS WHEN: user wants new tab, open in new window, create new page, or open multiple pages simultaneously.',
+      description: '➕ Creates NEW/ADDITIONAL browser tab. USE THIS ONLY when user explicitly wants MULTIPLE tabs or says "open in new tab", "create another tab", "new window". ❌ DO NOT USE for simple navigation! For "go to URL" or "navigate to", use navigate tool instead. create_tab is for managing multiple tabs simultaneously.',
       inputSchema: z.object({
         url: z.string().optional().describe('URL to open in new tab (optional)')
       }),

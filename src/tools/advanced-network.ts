@@ -53,7 +53,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
     
     {
       name: 'enable_response_interception',
-      description: 'Enable network traffic interception - captures/intercepts ALL network responses (API calls, requests, HTTP traffic). Use when user says "intercept traffic", "capture network requests", "monitor API calls", "see what packets are sent". Stays active until disabled. After enabling, use list_intercepted_responses to see captured traffic. WARNING: Cannot be used simultaneously with create_mock_endpoint - disable one before using the other.',
+      description: '🔴 START HERE for traffic interception. Enables network traffic capture - intercepts ALL responses (API calls, HTTP requests). COMPLETE WORKFLOW: 1️⃣ enable_response_interception → 2️⃣ navigate or click (trigger traffic) → 3️⃣ list_intercepted_responses (see what was captured) → 4️⃣ modify_intercepted_response (optional: change response) → 5️⃣ disable_response_interception. Use when user says "intercept traffic", "capture requests", "monitor API calls". WARNING: Cannot work with create_mock_endpoint simultaneously.',
       inputSchema: z.object({
         patterns: z.array(z.string()).default(['*']).describe('URL patterns to intercept'),
         resourceTypes: z.array(z.string()).optional().describe('Resource types to intercept (Document, Script, XHR, Fetch, etc.)'),
@@ -153,7 +153,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'list_intercepted_responses',
-      description: 'List/show ALL captured network traffic, intercepted requests, API calls, and HTTP responses. Use after enabling interception to see what packets were captured. Shows URLs, methods, status codes, and headers. Use when user asks "what traffic was intercepted", "show me the requests", "list captured packets", "what API calls were made".',
+      description: '📋 STEP 2 of interception workflow. Lists ALL captured network traffic after enable_response_interception. Shows: URLs, methods, status codes, headers, requestIds. Use when user asks "what traffic was intercepted", "show captured requests", "list packets", "what API calls were made", "what was captured". Returns requestIds needed for modify_intercepted_response. MUST have enable_response_interception active first!',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
@@ -210,7 +210,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'modify_intercepted_response',
-      description: 'Modify/change/edit a captured network response before it reaches the browser. Change response body (JSON data), headers, or status code. Then send the modified packet to the page. Use when user says "modify the response", "change the API data", "edit the packet", "send modified data to page".',
+      description: '✏️ STEP 3 (optional) of interception workflow. Modifies captured response BEFORE browser receives it. Change: response body (JSON/HTML), headers, status code. Then sends modified packet to page. WORKFLOW: 1️⃣ enable_response_interception → 2️⃣ list_intercepted_responses (get requestId) → 3️⃣ modify_intercepted_response (change data) → 4️⃣ browser receives modified response. Use when user says "modify response", "change API data", "edit packet", "send modified data".',
       inputSchema: z.object({
         requestId: z.string().describe('Request ID from list_intercepted_responses'),
         modifiedBody: z.string().optional().describe('New response body (base64 if binary)'),
