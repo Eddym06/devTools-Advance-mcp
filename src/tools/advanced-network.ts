@@ -153,7 +153,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'list_intercepted_responses',
-      description: '📋 STEP 2 of interception workflow. Lists ALL captured network traffic after enable_response_interception. Shows: URLs, methods, status codes, headers, requestIds. Use when user asks "what traffic was intercepted", "show captured requests", "list packets", "what API calls were made", "what was captured". Returns requestIds needed for modify_intercepted_response. MUST have enable_response_interception active first!',
+      description: '📋 STEP 2 of interception workflow. Lists ALL captured network traffic after enable_response_interception. Shows: URLs, methods, status codes, headers, requestIds. ALIASES: "show intercepted traffic", "list captured requests/responses/packets", "what was intercepted", "show network traffic", "display captured data", "get intercepted data". Returns requestIds needed for modify_intercepted_response. Essential after interception is enabled!',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
