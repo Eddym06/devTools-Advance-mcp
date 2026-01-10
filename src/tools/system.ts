@@ -134,7 +134,7 @@ export function createSystemTools(connector: ChromeConnector) {
     // Execute code in a specific target
     {
       name: 'execute_in_target',
-      description: 'Execute JavaScript code in a specific target (extension service worker, etc.)',
+      description: '⚙️ Executes JavaScript in specific target context (extension SW, iframe). USE THIS WHEN: 1️⃣ Debugging Chrome extensions (access chrome.runtime, chrome.tabs). 2️⃣ Interacting with iframe content. 3️⃣ Accessing service worker scope. PREREQUISITE: connect_to_target FIRST to get targetId. CRITICAL: Use this (NOT execute_script) for non-page contexts. Extensions: can access chrome.* APIs. Returns: result from target context.',
       inputSchema: z.object({
         targetId: z.string().describe('Target ID'),
         script: z.string().describe('JavaScript code to execute'),

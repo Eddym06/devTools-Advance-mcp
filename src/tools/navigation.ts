@@ -149,7 +149,7 @@ export function createNavigationTools(connector: ChromeConnector) {
     // List tabs
     {
       name: 'list_tabs',
-      description: 'List all open tabs',
+      description: '📋 Lists all open browser tabs. USE THIS WHEN: 1️⃣ Need to switch between tabs (get tab IDs). 2️⃣ Multiple tabs open, need to find specific one by title/URL. 3️⃣ Verifying tab was created. 4️⃣ Managing multiple pages simultaneously. 5️⃣ Debugging: "which tab am I in?". Returns: tab IDs, titles, URLs. Use returned ID with tabId parameter in other tools.',
       inputSchema: z.object({}),
       handler: async () => {
         await connector.verifyConnection();
@@ -193,7 +193,7 @@ export function createNavigationTools(connector: ChromeConnector) {
     // Close tab
     {
       name: 'close_tab',
-      description: 'Close a tab by ID',
+      description: '❌ Closes specific tab by ID. USE THIS WHEN: Cleaning up after multi-tab workflow, closing popups/ads, managing tab overflow. PREREQUISITE: list_tabs to get tab ID. CAUTION: Cannot close if it\'s the only tab.',
       inputSchema: z.object({
         tabId: z.string().describe('Tab ID to close')
       }),
@@ -212,7 +212,7 @@ export function createNavigationTools(connector: ChromeConnector) {
     // Activate/switch to tab
     {
       name: 'switch_tab',
-      description: 'Switch to a specific tab',
+      description: '🔄 Switches focus to specific tab. USE THIS WHEN: Working with multiple tabs, need to interact with different page. WORKFLOW: list_tabs → get target tab ID → switch_tab → interact with that tab.',
       inputSchema: z.object({
         tabId: z.string().describe('Tab ID to switch to')
       }),
@@ -231,7 +231,7 @@ export function createNavigationTools(connector: ChromeConnector) {
     // Get current URL
     {
       name: 'get_url',
-      description: 'Get the current URL of the page',
+      description: '🔗 Gets current page URL. USE THIS WHEN: 1️⃣ Verifying navigation worked (check URL changed). 2️⃣ Checking if redirect happened. 3️⃣ Confirming on correct page before interaction. 4️⃣ Extracting URL parameters (parse returned URL). 5️⃣ Debugging: "where am I?". Returns: Full URL including protocol, domain, path, query params.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),

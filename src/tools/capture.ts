@@ -4,6 +4,7 @@
 
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
+import { truncateOutput } from '../utils/truncate.js';
 
 export function createCaptureTools(connector: ChromeConnector) {
   return [
@@ -89,10 +90,14 @@ export function createCaptureTools(connector: ChromeConnector) {
           returnByValue: true
         });
         
+        const htmlContent = result.result.value;
+        const truncated = truncateOutput(htmlContent, 50000, 'html');
+        
         return {
           success: true,
-          html: result.result.value,
-          size: result.result.value.length
+          html: truncated.data,
+          size: htmlContent.length,
+          ...truncated
         };
       }
     },

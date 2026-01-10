@@ -121,7 +121,7 @@ export function createInteractionTools(connector: ChromeConnector) {
     // Get text content
     {
       name: 'get_text',
-      description: 'Extracts visible text content from any element - gets rendered text from headings, paragraphs, divs, buttons, etc. Use for web scraping, content extraction, reading page text, analyzing text content, verifying displayed text, or extracting data from pages.',
+      description: '📝 Extracts visible text from elements. USE THIS WHEN: 1️⃣ Verifying click/action worked (check if new text appeared). 2️⃣ Scraping content (articles, prices, names). 3️⃣ Reading dynamic text loaded after interaction. 4️⃣ Confirming success/error messages. PREREQUISITE: Run get_html first to identify correct selector. Returns: Rendered text only (no HTML tags). Use for: content verification, web scraping, text analysis.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector of element'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -158,7 +158,7 @@ export function createInteractionTools(connector: ChromeConnector) {
     // Get attribute
     {
       name: 'get_attribute',
-      description: 'Retrieves any HTML attribute value from elements - gets href from links, src from images, data attributes, IDs, classes, etc. Use for extracting URLs, analyzing page structure, getting metadata, scraping attribute data, or inspecting element properties.',
+      description: '🔍 Retrieves HTML attribute values from elements. USE THIS WHEN: 1️⃣ Getting link URLs (href from <a> tags). 2️⃣ Getting image sources (src from <img>). 3️⃣ Getting data attributes (data-id, data-value). 4️⃣ Getting element IDs/classes for verification. 5️⃣ Checking disabled/readonly states. WORKFLOW: get_html → identify element → get_attribute(selector, "href"). Common attributes: href, src, id, class, data-*, alt, title, value, disabled.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector of element'),
         attribute: z.string().describe('Attribute name to get'),
@@ -193,41 +193,89 @@ export function createInteractionTools(connector: ChromeConnector) {
     // Execute JavaScript
     {
       name: 'execute_script',
-      description: 'Executes JavaScript code in page context. BEST PRACTICES: 1️⃣ Prefer get_html/click/type when possible (simpler & safer). 2️⃣ Use execute_script ONLY for: complex queries (querySelectorAll with map/filter), accessing window variables/functions, triggering custom events, advanced DOM manipulation. 3️⃣ ALWAYS use "return" statement to get results. EXAMPLES: return Array.from(document.querySelectorAll(".item")).map(e => e.textContent); | return window.appConfig; | Advanced scraping, data extraction, complex interactions.',
+      description: 'Executes JavaScript code in page context. BEST PRACTICES: 1️⃣ Prefer get_html/click/type when possible (simpler & safer). 2️⃣ Use execute_script ONLY for: complex queries (querySelectorAll with map/filter), accessing window variables/functions, triggering custom events, advanced DOM manipulation. 3️⃣ ALWAYS use "return" statement to get results. 4️⃣ Return simple values (strings, numbers, arrays, plain objects) - NOT DOM nodes or Handles. EXAMPLES: return Array.from(document.querySelectorAll(".item")).map(e => e.textContent); | return window.appConfig; | return document.title;',
       inputSchema: z.object({
-        script: z.string().describe('JavaScript code to execute'),
+        script: z.string().describe('JavaScript code to execute. MUST include "return" statement for results. Return serializable values only (no DOM nodes).'),
         tabId: z.string().optional().describe('Tab ID (optional) - MUST be a Page/Tab ID, not a Service Worker ID'),
         awaitPromise: z.boolean().default(false).describe('Wait for promise to resolve'),
-        timeout: z.number().default(30000).describe('Timeout in milliseconds')
+        timeoutMs: z.number().default(30000).optional().describe('Timeout in milliseconds (default: 30000). AI should specify based on script complexity: simple queries 5000ms, complex operations 30000ms, heavy computations 60000ms.')
       }),
-      handler: async ({ script, tabId, awaitPromise, timeout = 30000 }: any) => {
-        await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
-        const { Runtime } = client;
-        
-        await Runtime.enable();
-        
-        const result = await withTimeout(Runtime.evaluate({
-          expression: script,
-          awaitPromise,
-          returnByValue: true
-        }), timeout, 'Script execution timed out') as any;
-        
-        if (result.exceptionDetails) {
-          throw new Error(`Script execution failed: ${result.exceptionDetails.text}`);
+      handler: async ({ script, tabId, awaitPromise, timeoutMs = 30000 }: any) => {
+        try {
+          await connector.verifyConnection();
+          const client = await connector.getTabClient(tabId);
+          const { Runtime } = client;
+          
+          await Runtime.enable();
+          
+          // Wrap script to ensure it returns serializable values
+          const wrappedScript = `
+            (function() {
+              try {
+                const result = (function() {
+                  ${script}
+                })();
+                
+                // Ensure result is serializable
+                if (result === undefined) return null;
+                if (result === null) return null;
+                if (typeof result === 'function') return '[Function]';
+                if (result instanceof Node || result instanceof Element) {
+                  return '[DOM Node - use get_text or get_attribute instead]';
+                }
+                
+                return result;
+              } catch (e) {
+                return { __error: true, message: e.message, stack: e.stack };
+              }
+            })()
+          `;
+          
+          const result = await withTimeout(Runtime.evaluate({
+            expression: wrappedScript,
+            awaitPromise,
+            returnByValue: true,
+            userGesture: true
+          }), timeoutMs, `Script execution timed out after ${timeoutMs}ms`) as any;
+          
+          // Check for evaluation exceptions
+          if (result.exceptionDetails) {
+            const errorMsg = result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Unknown error';
+            return {
+              success: false,
+              error: `Script execution failed: ${errorMsg}`,
+              exceptionDetails: result.exceptionDetails
+            };
+          }
+          
+          // Check for wrapped error
+          const resultValue = result.result.value;
+          if (resultValue && resultValue.__error) {
+            return {
+              success: false,
+              error: `Script error: ${resultValue.message}`,
+              stack: resultValue.stack
+            };
+          }
+          
+          return {
+            success: true,
+            result: resultValue
+          };
+        } catch (error: any) {
+          return {
+            success: false,
+            error: error.message || 'Script execution failed',
+            suggestion: 'Ensure: 1) Script has return statement, 2) Returns serializable values (not DOM nodes), 3) Page is loaded, 4) TabId is correct'
+          };
         }
-        
-        return {
-          success: true,
-          result: result.result.value
-        };
       }
     },
 
     // Scroll
     {
       name: 'scroll',
-      description: 'Scrolls webpage or specific element to position - triggers lazy-loading content, reveals hidden elements, loads infinite scroll content. Use for loading dynamic content, capturing full-page screenshots, accessing bottom sections, triggering scroll events, or navigating long pages.',
+      description: '⬇️ Scrolls page/element to position. USE THIS WHEN: 1️⃣ Target element below fold (need to scroll to make visible). 2️⃣ Lazy-loading content (scroll triggers image/content load). 3️⃣ Infinite scroll pages (scroll down loads more items). 4️⃣ Taking full-page screenshot (scroll to bottom first). 5️⃣ Content not visible in viewport. TRIGGERS: "scroll down", "load more content", "see bottom of page". Common: scroll(0, 9999) for bottom, scroll(0, 0) for top.',
       inputSchema: z.object({
         x: z.number().default(0).describe('Horizontal scroll position'),
         y: z.number().optional().describe('Vertical scroll position'),
@@ -258,13 +306,13 @@ export function createInteractionTools(connector: ChromeConnector) {
     // Wait for selector
     {
       name: 'wait_for_selector',
-      description: 'Wait for an element to appear on the page',
+      description: '⏱️ Waits for element to appear in DOM. USE THIS WHEN: 1️⃣ After click, waiting for modal/popup to appear. 2️⃣ After form submit, waiting for success message. 3️⃣ After AJAX load, waiting for new content. 4️⃣ Click triggers animation/transition. WORKFLOW: click → wait_for_selector → THEN interact with new element. TIMEOUT: Set based on expected load time (fast: 5000ms, normal: 15000ms, slow: 30000ms). Prevents "element not found" errors by waiting for dynamic content.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector to wait for'),
-        timeout: z.number().default(30000).describe('Timeout in milliseconds'),
+        timeoutMs: z.number().default(30000).optional().describe('Timeout in milliseconds (default: 30000). AI should set: quick animations 5000ms, normal loads 15000ms, slow APIs 30000ms.'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ selector, timeout, tabId }: any) => {
+      handler: async ({ selector, timeoutMs = 30000, tabId }: any) => {
         await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
@@ -276,7 +324,7 @@ export function createInteractionTools(connector: ChromeConnector) {
             expression: `document.querySelector('${selector}') !== null`
           });
           return result.result.value === true;
-        }, timeout);
+        }, timeoutMs);
         
         if (!found) {
           throw new Error(`Timeout waiting for selector: ${selector}`);

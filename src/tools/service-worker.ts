@@ -168,7 +168,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Get service worker details
     {
       name: 'get_service_worker',
-      description: 'Get detailed information about a specific service worker',
+      description: '🔍 Gets detailed info about specific Service Worker. USE THIS WHEN: 1️⃣ Need version ID for other SW operations. 2️⃣ Checking SW status (installing, active, redundant). 3️⃣ Getting scope URL and script path. PREREQUISITE: Get versionId from list_service_workers. RETURNS: registrationId, scopeURL, scriptURL, status, runningStatus. USE WITH: stop_service_worker, inspect_service_worker (need versionId).',
       inputSchema: z.object({
         versionId: z.string().describe('Service worker version ID'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -204,7 +204,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Unregister service worker
     {
       name: 'unregister_service_worker',
-      description: 'Unregister a service worker by scope URL',
+      description: '🚫 Removes Service Worker registration permanently. USE THIS WHEN: 1️⃣ Disabling PWA offline mode (force online). 2️⃣ Removing extension background script (cleanup). 3️⃣ Testing SW installation from scratch. 4️⃣ Fixing broken SW (unregister + refresh + re-register). PARAMETER: scopeURL (get from list_service_workers). WARNING: Removes offline capability, background sync. EFFECT: Page reloads may re-register SW.',
       inputSchema: z.object({
         scopeURL: z.string().describe('Scope URL of the service worker to unregister'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -242,7 +242,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Update service worker
     {
       name: 'update_service_worker',
-      description: 'Force update a service worker registration',
+      description: '🔄 Forces Service Worker to check for updates immediately. USE THIS WHEN: 1️⃣ Testing SW updates (skip 24hr wait). 2️⃣ Deploying new PWA version (force refresh). 3️⃣ SW behavior changed but not updating. 4️⃣ Debugging stale cache issues. PARAMETER: scopeURL. WORKFLOW: update_service_worker → skip_waiting (activate new version). EFFECT: Downloads new SW script, triggers install event.',
       inputSchema: z.object({
         scopeURL: z.string().describe('Scope URL of the service worker to update'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -280,7 +280,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Start service worker
     {
       name: 'start_service_worker',
-      description: 'Start a service worker',
+      description: '▶️ Starts stopped Service Worker. USE THIS WHEN: 1️⃣ SW stopped but needed (reactivate). 2️⃣ Testing SW activation. 3️⃣ After stop_service_worker (restart). PARAMETER: scopeURL (get from list_service_workers). EFFECT: Triggers SW activate event, enables offline mode, background sync. TIP: Use inspect_service_worker_logs to see activation logs.',
       inputSchema: z.object({
         scopeURL: z.string().describe('Scope URL of the service worker to start'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -303,7 +303,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Stop service worker
     {
       name: 'stop_service_worker',
-      description: 'Stop a running service worker',
+      description: '⏹️ Stops running Service Worker. USE THIS WHEN: 1️⃣ Testing SW lifecycle (stop → start). 2️⃣ Debugging SW issues (restart fresh). 3️⃣ Disabling background tasks temporarily. PARAMETER: versionId (get from get_service_worker or list_service_workers). EFFECT: SW terminates, offline mode disabled, background sync paused. TIP: Use start_service_worker to restart.',
       inputSchema: z.object({
         versionId: z.string().describe('Version ID of the service worker to stop'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -326,7 +326,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Inspect service worker
     {
       name: 'inspect_service_worker',
-      description: 'Open DevTools for a service worker',
+      description: '🔧 Opens Chrome DevTools for Service Worker (visual debugging). USE THIS WHEN: 1️⃣ Prefer visual debugging over logs. 2️⃣ Need breakpoints in SW code. 3️⃣ Inspecting cache contents visually. 4️⃣ Step-through debugging SW events. PARAMETER: versionId. EFFECT: Opens new DevTools window for SW context. ALTERNATIVE: Use inspect_service_worker_logs for programmatic log capture.',
       inputSchema: z.object({
         versionId: z.string().describe('Version ID of the service worker to inspect'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -349,7 +349,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Skip waiting
     {
       name: 'skip_waiting',
-      description: 'Skip waiting phase for a service worker',
+      description: '⏩ Activates waiting Service Worker immediately (skip wait phase). USE THIS WHEN: 1️⃣ New SW version waiting but not activating. 2️⃣ Testing SW updates quickly (skip user close tabs). 3️⃣ Force immediate PWA update. PREREQUISITE: SW in "waiting" state (check list_service_workers). WORKFLOW: update_service_worker → skip_waiting → refresh page. EFFECT: Old SW replaced immediately, may break open pages.',
       inputSchema: z.object({
         scopeURL: z.string().describe('Scope URL of the service worker'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -372,7 +372,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Get service worker cache names
     {
       name: 'get_sw_caches',
-      description: 'Get cache names used by service workers',
+      description: '🗄️ Lists cache names created by Service Workers. USE THIS WHEN: 1️⃣ Debugging offline mode (see cached resources). 2️⃣ Checking cache strategy (what\'s cached). 3️⃣ Identifying stale caches (old versions). 4️⃣ PWA storage analysis. RETURNS: Array of cache names with IDs, security origins. COMMON NAMES: "v1-static", "dynamic-cache", "offline-page". TIP: Use Chrome\'s Cache Storage viewer for detailed inspection.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
