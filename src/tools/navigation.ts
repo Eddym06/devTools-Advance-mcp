@@ -22,42 +22,84 @@ export function createNavigationTools(connector: ChromeConnector) {
       handler: async ({ url, tabId, waitUntil, timeout = 30000 }: any) => {
         console.error(`[Navigation] Starting navigation to ${url} (tab: ${tabId || 'active'})`);
         
-        // VERIFY CONNECTION FIRST
         await connector.verifyConnection();
         
         if (!isValidUrl(url)) {
-          console.error(`[Navigation] Invalid URL rejected: ${url}`);
           throw new Error(`Invalid URL: ${url}`);
         }
 
-        console.error(`[Navigation] Connecting to tab...`);
         const client = await connector.getTabClient(tabId);
-        console.error(`[Navigation] Connected to tab. Enabling Page domain...`);
-        const { Page } = client;
+        const { Page, Network } = client;
         
-        await Page.enable();
+        await Promise.all([
+          Page.enable(),
+          Network.enable()
+        ]);
 
-        console.error(`[Navigation] Setting up event listener for ${waitUntil}...`);
-        
-        // Set up the event listener BEFORE navigating
-        let eventPromise;
-        if (waitUntil === 'load') {
-          eventPromise = Page.loadEventFired();
+        // Setup event listeners
+        let loadPromise;
+        if (waitUntil === 'networkidle') {
+           // Network idle implementation
+           loadPromise = new Promise<void>((resolve, reject) => {
+                let pendingRequests = 0;
+                let lastRequestTime = Date.now();
+                let checkInterval: NodeJS.Timeout;
+                let timeoutId: NodeJS.Timeout;
+                let hasLoaded = false;
+                
+                // Also wait for the load event as a baseline
+                Page.loadEventFired().then(() => {
+                    hasLoaded = true;
+                });
+
+                const cleanup = () => {
+                    clearInterval(checkInterval);
+                    clearTimeout(timeoutId);
+                };
+
+                timeoutId = setTimeout(() => {
+                    cleanup();
+                    // Resolve with warning on timeout
+                    console.error('[Navigation] networkidle timeout, proceeding');
+                    resolve();
+                }, timeout);
+
+                Network.requestWillBeSent(() => {
+                    pendingRequests++;
+                    lastRequestTime = Date.now();
+                });
+
+                const onRequestDone = () => {
+                    if (pendingRequests > 0) pendingRequests--;
+                    lastRequestTime = Date.now();
+                };
+
+                Network.loadingFinished(onRequestDone);
+                Network.loadingFailed(onRequestDone);
+
+                checkInterval = setInterval(() => {
+                    // Conditions: Page load fired AND 0 pending requests AND 500ms of silence
+                    if (hasLoaded && pendingRequests === 0 && (Date.now() - lastRequestTime) > 500) {
+                        cleanup();
+                        resolve();
+                    }
+                }, 100);
+           });
         } else if (waitUntil === 'domcontentloaded') {
-          eventPromise = Page.domContentEventFired();
+          loadPromise = Page.domContentEventFired();
         } else {
-          // For networkidle, just wait a bit
-          eventPromise = new Promise(r => setTimeout(r, 1000));
+          loadPromise = Page.loadEventFired();
         }
 
-        console.error(`[Navigation] Page domain enabled. Sending navigate command...`);
+        // Navigate
         const navResponse = await Page.navigate({ url });
-        console.error(`[Navigation] Navigate response:`, navResponse);
         
-        console.error(`[Navigation] Waiting for ${waitUntil} event...`);
-        await withTimeout(eventPromise, timeout, `Navigation to ${url} timed out`);
+        if (navResponse.errorText) {
+            throw new Error(`Navigation failed: ${navResponse.errorText}`);
+        }
         
-        console.error(`[Navigation] Event received successfully!`);
+        // Wait for condition
+        await withTimeout(loadPromise, timeout, `Navigation to ${url} timed out waiting for ${waitUntil}`);
         
         await humanDelay();
         
