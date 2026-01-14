@@ -16,10 +16,10 @@ const interceptionState = new Map<string, { autoContinue: boolean; pauseMode: st
 
 export function createNetworkAccessibilityTools(connector: ChromeConnector) {
   return [
-    // Show captured requests - RENAMED for clarity
+    // List intercepted requests - Exposed independently
     {
-      name: 'show_captured_network_traffic',
-      description: '📝 List all captured network requests with URLs, methods, headers, and requestIds. USE: After start_capturing_network_requests to see traffic. Returns both paused and auto-continued requests. WHY: Official way to see intercepted traffic (not execute_script/Performance API). Copy requestId for resend_network_request.',
+      name: 'list_intercepted_requests',
+      description: '📝 **HERRAMIENTA PRINCIPAL PARA VER TRÁFICO INTERCEPTADO** - Lista TODAS las peticiones de red capturadas incluyendo URLs, métodos, headers y requestId necesario para replay. 🎯 CUÁNDO USAR: Después de enable_network_interception + cualquier acción del usuario (click/navigate). Devuelve historial de peticiones auto-continuadas. ⛔ DEJA DE USAR: execute_script, Performance API - esta es la forma oficial. Cada petición tiene un requestId - cópialo para usar con replay_intercepted_request.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
@@ -67,15 +67,15 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
           interceptedRequests: allRequests,
           count: allRequests.length,
           message: `Found ${activeList.length} paused requests and ${historyList.length} processed/auto-continued requests.`,
-          nextStep: allRequests.length > 0 ? `⚠️ To replay a packet, call resend_network_request with one of the requestId values above` : undefined
+          nextStep: allRequests.length > 0 ? `⚠️ To replay a packet, call replay_intercepted_request with one of the requestId values above` : undefined
         };
       }
     },
 
-    // Enable network interception - RENAMED
+    // Enable network interception
     {
-      name: 'start_capturing_network_requests',
-      description: '✅ START INTERCEPTION - The foundation for modifying requests in real-time. USE: Enable interception BEFORE the action that generates requests. Then use modify_network_request to change requests AS THEY HAPPEN (preserves auth). MODES: autoContinue=true (monitoring only), pauseMode="firstOnly" (modify first request safely). 🎯 This + modify_network_request = The correct workflow for authenticated APIs.',
+      name: 'enable_network_interception',
+      description: '🔒 START HERE for network traffic capture. Enables REQUEST interception with automatic logging. 📋 MANDATORY WORKFLOW: 1️⃣ enable_network_interception → 2️⃣ perform actions (click, navigate) → 3️⃣ list_intercepted_requests (NOT execute_script!) → 4️⃣ replay_intercepted_request. ⛔ DO NOT USE: execute_script, Performance API, fetch(). These tools exist for a reason! Defaults to safe autoContinue=true (no freeze).',
       inputSchema: z.object({
         patterns: z.array(z.string()).default(['*']).describe('URL patterns to intercept (e.g., ["*.js", "*.css", "*api*"]). Use "*" for all requests.'),
         autoContinue: z.boolean().default(true).describe('Automatically continue requests? TRUE (Default): Logs request to history and continues immediately (No Freeze). FALSE: Pauses browser for manual modify/continue (CAUTION: FREEZES PAGE).'),
@@ -191,10 +191,10 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
 
     // Modify and continue intercepted request
     {
-      name: 'modify_network_request',
-      description: '✅ MODIFY IN REAL-TIME - Changes intercepted request BEFORE it\'s sent (preserves auth/cookies). USE: After start_capturing_network_requests pauses a request, call this to modify URL/headers/body, then it\'s sent with ORIGINAL authentication. PERFECT FOR: Adding custom headers, changing API endpoints, testing different payloads. ⚠️ Must have active interception with pauseMode. This is THE CORRECT way to modify authenticated requests.',
+      name: 'modify_intercepted_request',
+      description: '✏️ Modifies paused request before sending. USE THIS WHEN: 1️⃣ Redirecting request (change URL to different API). 2️⃣ Modifying headers (add auth token, change User-Agent). 3️⃣ Changing HTTP method (POST → GET for testing). 4️⃣ Testing API variations (modify request body). PREREQUISITE: Get requestId from list_intercepted_requests. PARAMETERS: All optional - only provide what needs changing. EFFECT: Modified request sent to server.',
       inputSchema: z.object({
-        requestId: z.string().describe('Request ID from show_captured_network_traffic'),
+        requestId: z.string().describe('Request ID from list_intercepted_requests'),
         modifiedUrl: z.string().optional().describe('New URL to request'),
         modifiedMethod: z.string().optional().describe('New HTTP method (GET, POST, etc.)'),
         modifiedHeaders: z.record(z.string()).optional().describe('New/modified headers'),
@@ -243,10 +243,10 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
 
     // Fail intercepted request
     {
-      name: 'block_network_request',
-      description: '⛔ Block request with network error (simulate offline/failed API). USE: Test error handling, block ads/trackers, force timeouts. PREREQUISITE: Get requestId from show_captured_network_traffic. Errors: Failed, Aborted, TimedOut, AccessDenied. WHY: Primitive for testing; use smart tools.',
+      name: 'fail_intercepted_request',
+      description: '⛔ Blocks intercepted request (network error). USE THIS WHEN: 1️⃣ Simulating network failures (test offline behavior). 2️⃣ Blocking ads/trackers (prevent resource load). 3️⃣ Testing error handling (force API failure). 4️⃣ Speed testing (block slow resources). PREREQUISITE: Get requestId from list_intercepted_requests. ERROR REASONS: Failed, Aborted, TimedOut, AccessDenied, ConnectionClosed, ConnectionReset, ConnectionRefused. EFFECT: Request fails as if network error occurred.',
       inputSchema: z.object({
-        requestId: z.string().describe('Request ID from show_captured_network_traffic'),
+        requestId: z.string().describe('Request ID from list_intercepted_requests'),
         errorReason: z.enum([
           'Failed',
           'Aborted',
@@ -297,10 +297,10 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
 
     // Continue intercepted request (without modifications)
     {
-      name: 'continue_network_request',
-      description: '▶️ Continue paused request without changes. USE: Inspect traffic without modification, conditional logic. PREREQUISITE: Get requestId from show_captured_network_traffic. Must call continue/modify/block for ALL paused requests. WHY: Primitive; use autoContinue=true for monitoring.',
+      name: 'continue_intercepted_request',
+      description: '▶️ Continues paused request without changes. USE THIS WHEN: 1️⃣ Inspected request but don\'t need to modify (let it proceed). 2️⃣ Conditionally modifying (if condition not met, continue). 3️⃣ Analyzing requests without altering behavior. PREREQUISITE: Get requestId from list_intercepted_requests. EFFECT: Request proceeds normally to server. TIP: Must call this, modify_intercepted_request, or fail_intercepted_request for ALL intercepted requests.',
       inputSchema: z.object({
-        requestId: z.string().describe('Request ID from show_captured_network_traffic'),
+        requestId: z.string().describe('Request ID from list_intercepted_requests'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ requestId, tabId }: any) => {
@@ -330,12 +330,12 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }
     },
 
-    // Replay/Resend intercepted request - RENAMED
+    // Replay/Resend intercepted request
     {
-      name: 'resend_network_request',
-      description: '🔁 Replay captured packets with modified headers/body. Takes requestId from capture_network_on_action or show_captured_network_traffic. EXAMPLE: capture_network_on_action → resend_network_request({ requestId }). ⚠️ LIMITATION: Uses fetch() internally - may fail with CORS errors or authentication issues on APIs with strict security. This is a browser security restriction, not a tool bug. The original packet was captured successfully.',
+      name: 'replay_intercepted_request',
+      description: '🔁 **THIS IS HOW YOU "EXECUTE THE PACKET"!** Official packet replay tool - resends intercepted requests with preserved auth/cookies. 🎯 WORKFLOW: Get requestId from list_intercepted_requests → Call this tool → Packet sent to server. ⛔ DO NOT manually write fetch() in execute_script - this tool exists to handle CORS/sessions correctly. Supports modifying method/headers/body before replay. This is the ONLY correct way to replay captured traffic.',
       inputSchema: z.object({
-        requestId: z.string().describe('Request ID from show_captured_network_traffic (active or history)'),
+        requestId: z.string().describe('Request ID from list_intercepted_requests (active or history)'),
         tabId: z.string().optional().describe('Tab ID (optional)'),
         customMethod: z.string().optional().describe('Override HTTP method (e.g., change GET to POST)'),
         customHeaders: z.record(z.string()).optional().describe('Override specific headers (e.g., { "x-csrf-token": "new-token" }). Merges with, does not replace, original headers.'),
@@ -434,32 +434,22 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
         
         const value = result.result.value;
         if (value && value.__error) {
-             return {
-                success: false,
-                originalRequestId: requestId,
-                requestUrl: request.url,
-                requestMethod: finalMethod,
-                replayError: value.__error,
-                message: '✅ Packet data retrieved, ❌ Replay failed due to browser security',
-                explanation: 'The server rejected the replayed request (CORS/authentication). This is expected for secure APIs. The original request was captured with full details.',
-                alternativeWorkflow: 'Use start_capturing_network_requests + modify_network_request to intercept and modify requests BEFORE they are sent, not after.'
-             };
+             throw new Error(`Replay fetch error: ${value.__error}`);
         }
         
         return {
             success: true,
             message: `Request replayed successfully`,
             originalRequestId: requestId,
-            replayResult: value,
-            hint: '✅ Packet resent with preserved authentication. Response received from server.'
+            replayResult: value
         };
       }
     },
 
-    // Disable network interception - RENAMED
+    // Disable network interception
     {
-      name: 'stop_capturing_network_requests',
-      description: '🔓 Disable request interception (cleanup). USE: End of testing workflow, switch to normal browsing. Releases pending requests, clears storage. WHY: Cleanup primitive; smart tools auto-cleanup.',
+      name: 'disable_network_interception',
+      description: '🔓 Disables request interception (cleanup). USE THIS WHEN: 1️⃣ Done testing request modifications. 2️⃣ Switching to normal browsing (no interception). 3️⃣ Cleanup after testing. EFFECT: All pending requests released, future requests not intercepted. CLEANUP: Clears intercepted request storage. TIP: Call after finishing with modify_intercepted_request workflow.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
@@ -486,7 +476,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
     // Get accessibility tree
     {
       name: 'get_accessibility_tree',
-      description: '🌳 Get full accessibility tree (screen reader view). USE: Test a11y compliance, debug ARIA roles/labels, verify semantic HTML. Returns hierarchical tree with roles/names/values. WHY: Primitive for a11y analysis.',
+      description: '🌳 Full accessibility tree (screen reader view). USE THIS WHEN: 1️⃣ Testing accessibility compliance (ARIA roles, labels). 2️⃣ Debugging screen reader behavior (what\'s announced). 3️⃣ Verifying semantic HTML structure. 4️⃣ Finding accessibility issues (missing labels, invalid roles). RETURNS: Hierarchical tree with roles, names, values, children. COMMON ROLES: button, link, heading, textbox, region. TIP: Use get_accessibility_snapshot for simplified view.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)'),
         depth: z.number().default(-1).describe('Depth of the tree to retrieve (-1 for full tree)'),

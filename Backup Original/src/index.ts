@@ -11,10 +11,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { z } from 'zod';
 
 import { ChromeConnector } from './chrome-connector.js';
-import { createSmartWorkflowTools } from './tools/smart-workflows.js';
 import { createNavigationTools } from './tools/navigation.js';
 import { createInteractionTools } from './tools/interaction.js';
 import { createAntiDetectionTools } from './tools/anti-detection.js';
@@ -42,132 +40,27 @@ const server = new Server(
   },
   {
     capabilities: {
-      tools: {
-        listChanged: true,
-      },
+      tools: {},
     },
   }
 );
 
-// 🎯 Category-based tool activation system
-let advancedToolsEnabled = false;
-
-// Core tools (always visible)
-const coreTools = [
-  // Smart Workflows - HIGH LEVEL
-  ...createSmartWorkflowTools(connector),
-  
-  // Essential browser control
-  ...createPlaywrightLauncherTools(connector),
+// Collect all tools
+const allTools = [
+  ...createNetworkAccessibilityTools(connector),  // Network interception tools FIRST (list_intercepted_requests, etc.)
+  ...createAdvancedNetworkTools(connector),  // Advanced network tools (Response, Mock, WebSocket, HAR, Patterns, Injection)
+  ...createPlaywrightLauncherTools(connector),  // Playwright tools
   ...createNavigationTools(connector),
-  
-  // Basic interactions
   ...createInteractionTools(connector),
-  ...createSessionTools(connector),
-  ...createCaptureTools(connector),
-];
-
-// Advanced tools (hidden by default, activated on demand)
-const advancedTools = [
-  ...createNetworkAccessibilityTools(connector),
-  ...createAdvancedNetworkTools(connector),
   ...createAntiDetectionTools(connector),
   ...createServiceWorkerTools(connector),
+  ...createCaptureTools(connector),
+  ...createSessionTools(connector),
   ...createSystemTools(connector),
 ];
 
-// Tool to enable advanced features
-const controlTools: any[] = [
-  {
-    name: 'show_advanced_tools',
-    description: '🔓 UNLOCK ADVANCED TOOLS including resend_network_request for replaying captured packets. USE: After capturing traffic with capture_network_on_action, call this to unlock resend_network_request and 49 other advanced network/debugging tools. CRITICAL: You MUST call this before using resend_network_request!',
-    inputSchema: z.object({}),
-    handler: async (): Promise<any> => {
-      advancedToolsEnabled = true;
-      
-      // 🔔 Send notification to update tool list
-      try {
-        await server.notification({
-          method: 'notifications/tools/list_changed',
-          params: {}
-        });
-        console.error('📢 Sent tool list update notification to client');
-      } catch (e) {
-        console.error('⚠️ Could not send notification (client may not support it):', (e as Error).message);
-      }
-      
-      return {
-        success: true,
-        message: 'Advanced tools unlocked',
-        newToolsCount: advancedTools.length,
-        categories: [
-          'Network Request/Response Interception',
-          'API Mocking & WebSocket Monitoring', 
-          'HAR Recording & Replay',
-          'Accessibility Tree Inspection',
-          'Anti-Detection & Stealth Mode',
-          'Service Worker Control',
-          'Global Script/CSS Injection'
-        ],
-        keyTools: [
-          'start_capturing_network_requests - Enable traffic capture',
-          'show_captured_network_traffic - List captured requests',
-          'resend_network_request - REPLAY CAPTURED PACKETS (use this!)',
-          'modify_network_request - Edit request before sending',
-          'block_network_request - Block/fail requests',
-          'enable_response_interception - Intercept responses',
-          'create_mock_endpoint - Mock API responses',
-          'start_har_recording - Record HAR files'
-        ],
-        hint: 'resend_network_request is NOW AVAILABLE - use it to replay captured traffic!',
-        nextStep: 'You can now use resend_network_request({ requestId }) to replay packets',
-        notification: '📢 Tool list updated - advanced tools now available'
-      };
-    }
-  },
-  {
-    name: 'hide_advanced_tools',
-    description: '🔒 Hide advanced tools to simplify tool list. USE: Return to smart workflow mode. Advanced tools become unavailable until show_advanced_tools is called again.',
-    inputSchema: z.object({}),
-    handler: async () => {
-      advancedToolsEnabled = false;
-      
-      // 🔔 Send notification to update tool list
-      try {
-        await server.notification({
-          method: 'notifications/tools/list_changed',
-          params: {}
-        });
-        console.error('📢 Sent tool list update notification to client');
-      } catch (e) {
-        console.error('⚠️ Could not send notification (client may not support it):', (e as Error).message);
-      }
-      
-      return {
-        success: true,
-        message: 'Advanced tools hidden',
-        visibleToolsCount: coreTools.length + controlTools.length,
-        hint: 'Use show_advanced_tools to unlock them again',
-        notification: '📢 Tool list updated - advanced tools now hidden'
-      };
-    }
-  }
-];
-
-// Dynamic tool list based on activation state
-function getActiveTools() {
-  if (advancedToolsEnabled) {
-    return [...coreTools, ...controlTools, ...advancedTools];
-  }
-  return [...coreTools, ...controlTools];
-}
-
-// Create tool map for quick lookup (includes ALL tools)
-const allToolsMap = new Map([
-  ...coreTools,
-  ...controlTools,
-  ...advancedTools
-].map(tool => [tool.name, tool]));
+// Create tool map for quick lookup
+const toolMap = new Map(allTools.map(tool => [tool.name, tool]));
 
 // Helper to convert Zod schema to JSON Schema property
 function zodTypeToJsonSchema(schema: any): any {
@@ -244,9 +137,8 @@ function zodTypeToJsonSchema(schema: any): any {
 
 // Handle tool listing
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const activeTools = getActiveTools();
   return {
-    tools: activeTools.map(tool => {
+    tools: allTools.map(tool => {
       // Cast to any to access Zod shape
       const shape: any = (tool.inputSchema as any).shape;
       const properties: any = {};
@@ -301,7 +193,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   
-  const tool = allToolsMap.get(name);
+  const tool = toolMap.get(name);
   
   if (!tool) {
     throw new Error(`Unknown tool: ${name}`);
@@ -353,30 +245,27 @@ async function main() {
   console.error('');
   
   try {
-    console.error('🔧 DEFAULT MODE: Simplified tool list');
+    console.error('🔧 Tools available:', allTools.length);
     console.error('');
-    console.error('📊 Visible by default:');
-    console.error(`  🎯 Smart Workflows (${createSmartWorkflowTools(connector).length} tools)`);
-    console.error(`  🎭 Browser Control (${createPlaywrightLauncherTools(connector).length + createNavigationTools(connector).length} tools)`);
-    console.error(`  🖱️  Interactions (${createInteractionTools(connector).length + createSessionTools(connector).length + createCaptureTools(connector).length} tools)`);
-    console.error(`  🔓 Control (2 tools) - show_advanced_tools, hide_advanced_tools`);
+    console.error('Tool categories:');
+    console.error('  - 🛜 Network Accessibility (9 tools) - Request interception, replay, accessibility');
+    console.error('  - 📡 Advanced Network Tools (20 tools) - Response interception, mocks, WebSocket, HAR');
+    console.error('  - 🎭 Playwright Launcher (4 tools) - Browser automation with profiles');
+    console.error('  - 🧭 Navigation & Tabs (8 tools)');
+    console.error('  - 🖱️  Page Interaction (8 tools)');
+    console.error('  - 🥷 Anti-Detection (5 tools)');
+    console.error('  - ⚙️  Service Workers (9 tools)');
+    console.error('  - 📸 Capture & Export (5 tools)');
+    console.error('  - 🍪 Session & Cookies (9 tools)');
+    console.error('  - 🔧 System & Extensions (4 tools)');
     console.error('');
-    console.error(`✨ ${coreTools.length + controlTools.length} tools visible (${advancedTools.length} advanced tools hidden)`);
-    console.error('');
-    console.error('💡 AI can call "show_advanced_tools" to unlock:');
-    console.error('   • Network request/response interception');
-    console.error('   • API mocking & WebSocket monitoring');
-    console.error('   • HAR recording & replay');
-    console.error('   • Accessibility tree inspection');
-    console.error('   • Anti-detection & stealth mode');
-    console.error('   • Service worker control');
+    console.error('✨ Server ready!');
     console.error('');
     
     // Auto-launch Chrome on startup
     console.error('🚀 Auto-launching Chrome with Default profile...');
     try {
-      const allToolsList = [...coreTools, ...controlTools, ...advancedTools];
-      const launchTool = allToolsList.find((t: any) => t.name === 'launch_chrome_with_profile');
+      const launchTool = allTools.find(t => t.name === 'launch_chrome_with_profile');
       if (launchTool?.handler) {
         const launchPromise = launchTool.handler({ profileDirectory: 'Default' });
         const timeoutPromise = new Promise((_, reject) => 

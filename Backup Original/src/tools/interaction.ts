@@ -184,7 +184,7 @@ export function createInteractionTools(connector: ChromeConnector) {
     // Execute JavaScript (Kept separate as it's a "Catch-all" for advanced usage)
     {
       name: 'execute_script',
-      description: '⚠️ Execute JavaScript in page. WARNING: If replaying network packets, use resend_network_request instead! BEST PRACTICES: 1️⃣ Prefer perform_interaction/extract_element_data. 2️⃣ Use ONLY for: complex queries, custom events, DOM manipulation. 3️⃣ NEVER use fetch() for replaying captured traffic - use resend_network_request. 4️⃣ ALWAYS include "return" statement.',
+      description: 'Executes JavaScript code in page context. BEST PRACTICES: 1️⃣ Prefer perform_interaction/extract_element_data when possible. 2️⃣ Use execute_script ONLY for: complex queries, custom events, advanced DOM manipulation. 3️⃣ ALWAYS use "return" statement. 4️⃣ Return simple values (strings, numbers, arrays, plain objects).',
       inputSchema: z.object({
         script: z.string().describe('JavaScript code to execute. MUST include "return" statement.'),
         tabId: z.string().optional().describe('Tab ID (optional)'),
@@ -193,16 +193,6 @@ export function createInteractionTools(connector: ChromeConnector) {
       }),
       handler: async ({ script, tabId, awaitPromise, timeoutMs = 30000 }: any) => {
         try {
-          // Check if script is trying to replay network requests
-          if (script.includes('fetch(') && (script.includes('POST') || script.includes('method:'))) {
-            return {
-              success: false,
-              error: 'Use resend_network_request to replay captured packets, not execute_script+fetch()',
-              suggestion: 'Workflow: capture_network_on_action → copy requestId → resend_network_request({ requestId })',
-              hint: 'execute_script+fetch() breaks authentication and CORS. Use the official replay tools.'
-            };
-          }
-
           await connector.verifyConnection();
           const client = await connector.getTabClient(tabId);
           const { Runtime } = client;

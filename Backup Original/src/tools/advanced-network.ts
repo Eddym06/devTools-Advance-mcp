@@ -60,7 +60,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
     
     {
       name: 'enable_response_interception',
-      description: '🔴 Enable RESPONSE interception (vs request interception). USE: Capture/modify server responses before browser sees them. Default autoContinue=true (safe monitoring). WORKFLOW: enable → action → list_intercepted_responses. WHY: Primitive for response modification; use smart tools for workflows.',
+      description: '🔴 START HERE for traffic interception. DEFAULT: Non-blocking monitoring. Logs all responses to history for inspection. COMPLETE WORKFLOW: 1️⃣ enable_response_interception → 2️⃣ navigate or click → 3️⃣ list_intercepted_responses. USE THIS for: "Capturing API responses", "Monitoring traffic". NOTE: Defaults to autoContinue=true to prevent page freezing. Set false ONLY if you explicitly need to MODIFY a response before the browser sees it.',
       inputSchema: z.object({
         patterns: z.array(z.string()).default(['*']).describe('URL patterns to intercept'),
         resourceTypes: z.array(z.string()).optional().describe('Resource types to intercept (Document, Script, XHR, Fetch, etc.)'),
