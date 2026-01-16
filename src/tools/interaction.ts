@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
 import { humanDelay, waitFor, withTimeout } from '../utils/helpers.js';
+import { truncateOutput } from '../utils/truncate.js';
 
 export function createInteractionTools(connector: ChromeConnector) {
   return [
@@ -231,12 +232,31 @@ export function createInteractionTools(connector: ChromeConnector) {
             return { success: false, error: result.exceptionDetails.exception?.description || 'Error' };
           }
           
-          const resultValue = result.result.value;
+          let resultValue = result.result.value;
           if (resultValue && resultValue.__error) {
             return { success: false, error: resultValue.message };
           }
+
+          // Handle potentially large output
+          let truncatedInfo = {};
           
-          return { success: true, result: resultValue };
+          if (typeof resultValue === 'string' && resultValue.length > 50000) {
+            const truncated = truncateOutput(resultValue, 50000, 'text');
+            resultValue = truncated.data;
+            truncatedInfo = {
+              truncated: true,
+              originalSize: truncated.totalSize,
+              warning: 'Output truncated. Use get_html for large content or specific selectors.'
+            };
+          }
+          
+          return {
+            success: true,
+            result: resultValue,
+            type: result.result.type,
+            className: result.result.className,
+            ...truncatedInfo
+          };
         } catch (error: any) {
           return { success: false, error: error.message };
         }

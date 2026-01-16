@@ -111,19 +111,32 @@ export function createCaptureTools(connector: ChromeConnector) {
       name: 'get_html',
       description: '🔍 CRITICAL ANALYSIS TOOL - extracts complete HTML source code. ⚠️ USE THIS FIRST BEFORE ANY INTERACTION! PROPER WORKFLOW: 1️⃣ navigate → 2️⃣ get_html (analyze structure) → 3️⃣ identify selectors from HTML (buttons: button.submit, inputs: input#email, links: a.nav-link) → 4️⃣ THEN click/type with verified selectors. NEVER guess selectors! Get HTML returns: element IDs, classes, button text, input names, form structure, links. Essential for: web scraping, finding correct selectors, analyzing page structure.',
       inputSchema: z.object({
+        selector: z.string().optional().describe('CSS selector to extract HTML from (e.g. "div.main-content", "#login-form"). If omitted, returns full page HTML.'),
         tabId: z.string().optional().describe('Tab ID (optional)'),
-        outerHTML: z.boolean().default(true).describe('Get outer HTML (includes <html> tag)')
+        outerHTML: z.boolean().default(true).describe('Get outer HTML (includes the element tag itself)')
       }),
-      handler: async ({ tabId, outerHTML }: any) => {
+      handler: async ({ selector, tabId, outerHTML }: any) => {
         await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Runtime } = client;
         
         await Runtime.enable();
         
-        const expression = outerHTML 
-          ? 'document.documentElement.outerHTML'
-          : 'document.documentElement.innerHTML';
+        let expression;
+        
+        if (selector) {
+          // Escape selector to prevent injection/syntax errors
+          const safeSelector = selector.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+          expression = `(function() {
+            const el = document.querySelector('${safeSelector}');
+            if (!el) return 'ELEMENT_NOT_FOUND';
+            return ${outerHTML ? 'el.outerHTML' : 'el.innerHTML'};
+          })()`;
+        } else {
+          expression = outerHTML 
+            ? 'document.documentElement.outerHTML'
+            : 'document.documentElement.innerHTML';
+        }
         
         const result: any = await Runtime.evaluate({
           expression,
@@ -135,11 +148,21 @@ export function createCaptureTools(connector: ChromeConnector) {
             throw new Error(`Get HTML failed: ${result.exceptionDetails.exception?.description || 'Unknown runtime error'}`);
         }
         
-        const htmlContent = result.result.value || '';
+        let htmlContent = result.result.value || '';
+        
+        if (htmlContent === 'ELEMENT_NOT_FOUND') {
+          return {
+            success: false,
+            error: `Element not found: ${selector}`,
+            hint: 'Check your CSS selector. Use get_html without selector to see full page structure.'
+          };
+        }
+
         const truncated = truncateOutput(htmlContent, 50000, 'html');
         
         return {
           success: true,
+          selector: selector || 'full-page',
           html: truncated.data,
           size: htmlContent.length,
           ...truncated
