@@ -20,7 +20,7 @@ This Model Context Protocol (MCP) server enables AI assistants like Claude, Roo 
 
 ## 🚀 Quick Installation
 
-### For Users (VS Code / Roo Code / Claude Desktop)
+### For Users (VS Code / Cline / Kilo Code / Antigravity / Claude Desktop)
 
 Simply add this to your `mcp.json` configuration file:
 
