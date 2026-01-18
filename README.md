@@ -1,5 +1,5 @@
 
-# Custom Chrome MCP Server
+# Chrome Devtools Advanced MCP
 
 <img src="assets/logo.png" align="right" width="120" height="auto" alt="Logo">
 
