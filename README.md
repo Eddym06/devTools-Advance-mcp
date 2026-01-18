@@ -27,9 +27,9 @@ Simply add this to your `mcp.json` configuration file:
 ```json
 {
   "mcpServers": {
-    "custom-chrome-mcp": {
+    "chrome-devtools-advanced-mcp": {
       "command": "npx",
-      "args": ["-y", "@eddym06/custom-chrome-mcp", "--port=9223"]
+      "args": ["-y", "chrome-devtools-advanced-mcp", "--port=9223"]
     }
   }
 }
