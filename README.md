@@ -1,25 +1,26 @@
-# Custom Chrome MCP Server 
 
-**Tu puente inteligente entre la IA y el Navegador.**
+# <img src="assets/logo.png" align="right" width="120" height="auto" alt="Logo"> Custom Chrome MCP Server
 
-Este servidor MCP (Model Context Protocol) permite a asistentes como Claude, Roo Code o Windsurf interactuar con Google Chrome de una manera **natural y potente**. A diferencia de otras herramientas de automatizaciÛn, esta soluciÛn se conecta a tu navegador real, permitiÈndote usar tus sesiones iniciadas, cookies y extensiones sin ser detectado.
+**Your Intelligent Bridge Between AI and the Browser.**
 
----
-
-##  øPor quÈ usar esto?
-
-*   ** NavegaciÛn "Humana":** Usa tu perfil de Chrome real. Si ya est·s logueado en LinkedIn, Gmail o tu ERP corporativo, la IA tambiÈn lo estar·.
-*   ** Indetectable:** TecnologÌas avanzadas de anti-detecciÛn y "Shadow Profile" para evitar bloqueos en sitios complejos.
-*   ** Herramientas Robustas:** M·s de 40 herramientas optimizadas para extracciÛn de datos (scraping), automatizaciÛn de formularios y an·lisis visual.
-*   ** R·pido y Seguro:** Ejecuta scripts y capturas de pantalla de manera segura, truncando salidas gigantes para no saturar a la IA.
+This Model Context Protocol (MCP) server enables AI assistants like Claude, Roo Code, or Windsurf to interact with Google Chrome in a **natural, powerful, and stealthy way**. Unlike other automation tools, this solution connects to your actual browser profile, allowing you to use your existing login sessions, cookies, and extensions without detection.
 
 ---
 
-##  InstalaciÛn R·pida
+## ‚ú® Why Use This?
 
-### Para Usuarios (VS Code / Roo Code / Claude Desktop)
+*   **üïµÔ∏è "Human" Navigation:** Uses your real Chrome profile. If you're logged into LinkedIn, Gmail, or your corporate ERP, your AI assistant is too.
+*   **üõ°Ô∏è Undetectable:** Advanced "Shadow Profile" technology prevents browser automation blocking on complex sites.
+*   **üõ†Ô∏è Robust Toolset:** Over 40+ specialized tools optimized for data scraping, specific element extraction, and visual analysis.
+*   **‚ö° Fast & Safe:** Safely executes scripts and screenshots, with intelligent output truncation to prevent crashing your AI context.
 
-Simplemente agrega esto a tu configuraciÛn de `mcpServers` (archivo `mcp.json`):
+---
+
+## üöÄ Quick Installation
+
+### For Users (VS Code / Roo Code / Claude Desktop)
+
+Simply add this to your `mcp.json` configuration file:
 
 ```json
 {
@@ -32,61 +33,111 @@ Simplemente agrega esto a tu configuraciÛn de `mcpServers` (archivo `mcp.json`):
 }
 ```
 
-°Y listo! Al reiniciar tu asistente, tendr·s acceso a herramientas como `launch_chrome_with_profile`, `get_html`, `click`, `type`, etc.
+Restart your assistant (Ctrl+R in VS Code), and you'll have instant access.
 
 ---
 
-##  GuÌa de Uso Simplificada
+## üí° Simplified Usage Guide
 
-### 1. Iniciar el Navegador
-La primera vez, pide a la IA:
-> *"Lanza Chrome con mi perfil por default"*
+### 1. Launch the Browser
+First, ask your AI:
+> *"Launch Chrome with my default profile"*
 
-Esto usar· la herramienta `launch_chrome_with_profile` para abrir una ventana de Chrome controlable sin cerrar tus otras ventanas.
+This triggers `launch_chrome_with_profile`, creating a controllable Chrome instance without closing your other windows.
 
-### 2. Navegar y Analizar
-Puedes pedir cosas como:
-*   *"Ve a amazon.com y busca laptops"*
-*   *"Analiza el HTML de esta p·gina"* (Usa `get_html` optimizado)
-*   *"Toma una captura de pantalla"*
+### 2. Navigate & Analyze
+You can ask:
+*   *"Go to amazon.com and search for laptops"*
+*   *"Analyze the HTML of the login form"* (Uses optimized `get_html`)
+*   *"Take a screenshot of the pricing table"*
 
-### 3. Interactuar
-La IA puede hacer clic, escribir y rellenar formularios por ti de manera inteligente, esperando a que los elementos carguen.
-
----
-
-##  Herramientas Destacadas
-
-| CategorÌa | Herramientas Clave | DescripciÛn |
-|-----------|-------------------|-------------|
-| **NavegaciÛn** | `browser_action`, `manage_tabs` | Control total de pestaÒas, recargas y movimiento. |
-| **An·lisis** | `get_html`, `screenshot`, `get_page_metrics` | Ve lo que ve el usuario. `get_html` incluye selectores inteligentes. |
-| **InteracciÛn** | `perform_interaction`, `execute_script` | Clics, escritura y ejecuciÛn de JS seguro. |
-| **Red** | `capture_network`, `resend_request` | (Avanzado) Analiza tr·fico y repite peticiones API. |
+### 3. Interact
+The AI can click, type, and fill forms intelligently, waiting for elements to load automatically.
 
 ---
 
-##  Preguntas Frecuentes
+## üõ†Ô∏è Tool List
 
-**øNecesito cerrar mi Chrome?**
-No. Gracias a la tecnologÌa "Shadow Profile", el servidor crea una copia segura de tu perfil temporalmente. Puedes seguir usando tu Chrome normal mientras la IA trabaja en paralelo.
+<details>
+<summary><strong>üëá Click here to view all available tools</strong></summary>
 
-**øFunciona en Mac y Linux?**
-°SÌ! El sistema es totalmente multiplataforma.
+### üé≠ Browser & Session Control
+| Tool | Description |
+|------|-------------|
+| `launch_chrome_with_profile` | **Start Here!** Launches Chrome with your cookies/extensions. |
+| `browser_action` | Navigate, reload, go back/forward. |
+| `manage_tabs` | Create, close, switch, or list tabs. |
+| `close_browser` | Safely closes the controlled session. |
 
-**Me aparece "Tool disabled by user"**
-Esto es un tema de seguridad de tu editor (VS Code). Generalmente se soluciona reiniciando la ventana (`Ctrl+R`) y aprobando los nuevos permisos cuando la IA intenta usar una herramienta.
+### üîç Analysis & Extraction
+| Tool | Description |
+|------|-------------|
+| `get_html` | **Critical.** Extracts simplified or full HTML. Supports selectors. |
+| `screenshot` | Captures visual proof (png/jpeg). |
+| `get_page_metrics` | Layout and viewport analysis. |
+| `get_accessibility_tree` | See the page structure as screen readers do. |
+
+### üñ±Ô∏è Interaction
+| Tool | Description |
+|------|-------------|
+| `perform_interaction` | Click, Type, Hover, Drag & Drop with auto-wait. |
+| `execute_script` | Run custom JavaScript safely (requires `return`). |
+| `extract_element_data` | Get specific text or attributes from elements. |
+| `set_viewport` | Resize window for responsive testing. |
+
+### üõ°Ô∏è Anti-Detection & Privacy
+| Tool | Description |
+|------|-------------|
+| `enable_stealth_mode` | Hides automation flags. |
+| `set_user_agent` | Spoof device/browser identity. |
+| `set_geolocation` | Mock GPS coordinates. |
+| `set_timezone` | Change browser timezone. |
+
+### üì° Network (Advanced)
+| Tool | Description |
+|------|-------------|
+| `capture_network_on_action` | Record traffic while performing an action. |
+| `resend_network_request` | Replay captured API calls. |
+| `start_har_recording` | Save full network logs (HAR format). |
+| `monitor_websocket_messages` | Listen to socket traffic. |
+
+### üç™ Storage & Cookies
+| Tool | Description |
+|------|-------------|
+| `get_cookies` / `set_cookie` | Manage browser cookies. |
+| `get_local_storage` | Read/Write local storage data. |
+| `export_session` | Save current session state to file. |
+
+</details>
 
 ---
 
-##  Para Desarrolladores
+## ‚ùì FAQ
 
-Si quieres contribuir o correrlo localmente:
+**Do I need to close my Chrome?**
+No! Thanks to "Shadow Profile" technology, this server creates a temporary safe clone of your profile. You can keep browsing normally while the AI works in parallel.
 
-1.  Clona el repositorio.
-2.  Instala dependencias: `npm install`
-3.  Construye: `npm run build`
-4.  Inicia: `npm start`
+**Does it work on Mac/Linux?**
+Yes, it is fully cross-platform.
+
+**I see "Tool disabled by user" error**
+This is a VS Code security feature.
+1. Reload VS Code (`Ctrl+R`).
+2. When the AI tries to use a tool again, click **"Always Allow"** on the popup.
 
 ---
-*Desarrollado con  por @eddym06*
+
+## üë®‚Äçüíª For Developers
+
+To contribute or run locally:
+
+```bash
+git clone https://github.com/Eddym06/devTools-Advance-mcp.git
+cd custom-chrome-mcp
+npm install
+npm run build
+npm start
+```
+
+---
+*Developed with ‚ù§Ô∏è by @eddym06*
