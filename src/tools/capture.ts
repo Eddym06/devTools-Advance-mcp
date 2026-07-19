@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
 import { truncateOutput } from '../utils/truncate.js';
 import { escJS } from '../utils/helpers.js';
+import { saveBase64ToFile } from '../utils/file-storage.js';
 
 export function createCaptureTools(connector: ChromeConnector) {
   return [
@@ -97,12 +98,20 @@ export function createCaptureTools(connector: ChromeConnector) {
           throw new Error(`Screenshot failed: ${error.message}`);
         }
 
+        let filePath: string;
+        try {
+          filePath = saveBase64ToFile(screenshot.data, format, 'screenshot', tabId);
+        } catch (error: any) {
+          throw new Error(`Failed to save screenshot to disk: ${error.message}`);
+        }
+
         return {
           success: true,
           format,
           fullPage,
-          data: screenshot.data,
-          message: `Screenshot captured (${format}${fullPage ? ', full page' : ''})`
+          filePath,
+          preview: screenshot.data.substring(0, 200),
+          message: `Screenshot saved to ${filePath}`
         };
       }
     },
@@ -202,11 +211,18 @@ export function createCaptureTools(connector: ChromeConnector) {
 
         const { data } = await Page.printToPDF(options);
 
+        let filePath: string;
+        try {
+          filePath = saveBase64ToFile(data, 'pdf', 'print', tabId);
+        } catch (error: any) {
+          throw new Error(`Failed to save PDF to disk: ${error.message}`);
+        }
+
         return {
           success: true,
-          data,
+          filePath,
           format: 'pdf',
-          message: 'PDF generated successfully'
+          message: `PDF saved to ${filePath}`
         };
       }
     },

@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
 import { escJS } from '../utils/helpers.js';
+import { saveBase64ToFile } from '../utils/file-storage.js';
 
 export function createSmartWorkflowTools(connector: ChromeConnector) {
   return [
@@ -610,16 +611,18 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
                   stepResult.url = step.url;
                   break;
 
-                case 'screenshot':
+                case 'screenshot': {
                   const screenshot = await Page.captureScreenshot({ format: 'png' });
                   stepResult.success = true;
                   stepResult.screenshotSize = screenshot.data.length;
+                  stepResult.screenshotPath = saveBase64ToFile(screenshot.data, 'png', 'journey-step', tabId);
                   break;
+                }
               }
 
               if (captureScreenshots && step.action !== 'screenshot') {
                 const screenshot = await Page.captureScreenshot({ format: 'png' });
-                stepResult.screenshot = screenshot.data.substring(0, 100) + '...';
+                stepResult.screenshotPath = saveBase64ToFile(screenshot.data, 'png', 'journey-step', tabId);
               }
 
               results.push(stepResult);
