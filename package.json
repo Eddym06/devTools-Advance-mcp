@@ -59,9 +59,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Eddym06/devTools-Advance-mcp.git"
+    "url": "git+https://github.com/Eddym06/chrome-devTools-advanced-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/Eddym06/devTools-Advance-mcp/issues"
+    "url": "https://github.com/Eddym06/chrome-devTools-advanced-mcp/issues"
   }
 }

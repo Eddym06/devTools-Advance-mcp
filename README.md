@@ -153,7 +153,7 @@ This is a VS Code security feature.
 To contribute or run locally:
 
 ```bash
-git clone https://github.com/Eddym06/devTools-Advance-mcp.git
+git clone https://github.com/Eddym06/chrome-devTools-advanced-mcp.git
 cd custom-chrome-mcp
 npm install
 npm run build
