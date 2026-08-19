@@ -123,6 +123,18 @@ export function createNavigationTools(connector: ChromeConnector) {
         url: z.string().optional().describe('URL for new tab (action="create")'),
         tabId: z.string().optional().describe('Tab ID (required for close/switch, optional for get_url)')
       }),
+      // The shape returned varies per `action` (list -> tabs[], create -> tab,
+      // close/switch -> message only, get_url -> url+title) — every field but
+      // `success` is optional so one schema covers every branch.
+      outputSchema: z.object({
+        success: z.boolean(),
+        count: z.number().optional(),
+        tabs: z.array(z.object({ id: z.string(), title: z.string(), url: z.string() })).optional(),
+        tab: z.object({ id: z.string(), url: z.string() }).optional(),
+        message: z.string().optional(),
+        url: z.string().optional(),
+        title: z.string().optional(),
+      }),
       handler: async ({ action, url, tabId }: any) => {
         await connector.verifyConnection();
 

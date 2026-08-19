@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
-import { humanDelay, waitFor, withTimeout, escJS } from '../utils/helpers.js';
+import { humanDelay, waitFor, withTimeout } from '../utils/helpers.js';
 import { truncateOutput } from '../utils/truncate.js';
 
 export function createInteractionTools(connector: ChromeConnector) {
@@ -35,11 +35,14 @@ export function createInteractionTools(connector: ChromeConnector) {
         if (action === 'click') {
           if (!selector) throw new Error('Selector required for click');
 
-          const safeSelector = escJS(selector);
+          // JSON.stringify produces a fully-escaped JS string literal (quotes,
+          // backslashes, unicode) — safer and simpler than hand-rolled escaping.
+          const selectorLiteral = JSON.stringify(selector);
+
           // Wait for selector first
           const found = await waitFor(async () => {
             const result = await Runtime.evaluate({
-              expression: `document.querySelector('${safeSelector}') !== null`
+              expression: `document.querySelector(${selectorLiteral}) !== null`
             });
             return result.result.value === true;
           }, timeoutMs);
@@ -50,7 +53,7 @@ export function createInteractionTools(connector: ChromeConnector) {
           const result: any = await withTimeout(Runtime.evaluate({
             expression: `
                     (function() {
-                        const el = document.querySelector('${safeSelector}');
+                        const el = document.querySelector(${selectorLiteral});
                         if (!el) throw new Error('Element not found');
                         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         el.click();
@@ -72,10 +75,9 @@ export function createInteractionTools(connector: ChromeConnector) {
           if (!selector) throw new Error('Selector required for type');
           if (text === undefined) throw new Error('Text required for type');
 
-          const safeSel = escJS(selector);
           const script = `
                 (async function() {
-                    const el = document.querySelector('${safeSel}');
+                    const el = document.querySelector(${JSON.stringify(selector)});
                     if (!el) throw new Error('Element not found');
                     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     el.focus();
@@ -103,14 +105,12 @@ export function createInteractionTools(connector: ChromeConnector) {
           if (!selector) throw new Error('Selector required for select');
           if (value === undefined) throw new Error('Value required for select');
 
-          const safeSel = escJS(selector);
-          const safeVal = escJS(value);
           await Runtime.evaluate({
             expression: `
                     (function() {
-                        const select = document.querySelector('${safeSel}');
+                        const select = document.querySelector(${JSON.stringify(selector)});
                         if (!select) throw new Error('Select element not found');
-                        select.value = '${safeVal}';
+                        select.value = ${JSON.stringify(value)};
                         select.dispatchEvent(new Event('change', { bubbles: true }));
                         return true;
                     })()
@@ -123,7 +123,7 @@ export function createInteractionTools(connector: ChromeConnector) {
         // 4. SCROLL
         if (action === 'scroll') {
           const scrollScript = selector
-            ? `(function(){ const el = document.querySelector('${escJS(selector)}'); if(el) el.scrollTo(${coordinateX}, ${coordinateY}); else window.scrollTo(${coordinateX}, ${coordinateY}); })()`
+            ? `(function(){ const el = document.querySelector(${JSON.stringify(selector)}); if(el) el.scrollTo(${coordinateX}, ${coordinateY}); else window.scrollTo(${coordinateX}, ${coordinateY}); })()`
             : `window.scrollTo(${coordinateX}, ${coordinateY})`;
           await Runtime.evaluate({ expression: scrollScript });
           await humanDelay();
@@ -133,10 +133,9 @@ export function createInteractionTools(connector: ChromeConnector) {
         // 5. WAIT
         if (action === 'wait') {
           if (!selector) throw new Error('Selector required for wait');
-          const safeSel = escJS(selector);
           const found = await waitFor(async () => {
             const result = await Runtime.evaluate({
-              expression: `document.querySelector('${safeSel}') !== null`
+              expression: `document.querySelector(${JSON.stringify(selector)}) !== null`
             });
             return result.result.value === true;
           }, timeoutMs);
@@ -164,10 +163,9 @@ export function createInteractionTools(connector: ChromeConnector) {
         const { Runtime } = client;
         await Runtime.enable();
 
-        const safeSel = escJS(selector);
         if (action === 'text') {
           const result: any = await Runtime.evaluate({
-            expression: `(function() { const el = document.querySelector('${safeSel}'); return el ? el.textContent.trim() : null; })()`
+            expression: `(function() { const el = document.querySelector(${JSON.stringify(selector)}); return el ? el.textContent.trim() : null; })()`
           });
           if (result.result.value === null) throw new Error(`Element not found: ${selector}`);
           return { success: true, text: result.result.value, selector };
@@ -175,9 +173,8 @@ export function createInteractionTools(connector: ChromeConnector) {
 
         if (action === 'attribute') {
           if (!attributeName) throw new Error('Attribute name required');
-          const safeAttr = escJS(attributeName);
           const result: any = await Runtime.evaluate({
-            expression: `(function() { const el = document.querySelector('${safeSel}'); if (!el) return {__notFound: true}; const v = el.getAttribute('${safeAttr}'); return v === null ? {__nullAttr: true} : v; })()`,
+            expression: `(function() { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return {__notFound: true}; const v = el.getAttribute(${JSON.stringify(attributeName)}); return v === null ? {__nullAttr: true} : v; })()`,
             returnByValue: true
           });
           const val = result.result.value;

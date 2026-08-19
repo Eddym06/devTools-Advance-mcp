@@ -197,7 +197,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
         requestId: z.string().describe('Request ID from show_captured_network_traffic'),
         modifiedUrl: z.string().optional().describe('New URL to request'),
         modifiedMethod: z.string().optional().describe('New HTTP method (GET, POST, etc.)'),
-        modifiedHeaders: z.record(z.string()).optional().describe('New/modified headers'),
+        modifiedHeaders: z.record(z.string(), z.string()).optional().describe('New/modified headers'),
         modifiedPostData: z.string().optional().describe('New POST body data'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
@@ -338,7 +338,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
         requestId: z.string().describe('Request ID from show_captured_network_traffic (active or history)'),
         tabId: z.string().optional().describe('Tab ID (optional)'),
         customMethod: z.string().optional().describe('Override HTTP method (e.g., change GET to POST)'),
-        customHeaders: z.record(z.string()).optional().describe('Override specific headers (e.g., { "x-csrf-token": "new-token" }). Merges with, does not replace, original headers.'),
+        customHeaders: z.record(z.string(), z.string()).optional().describe('Override specific headers (e.g., { "x-csrf-token": "new-token" }). Merges with, does not replace, original headers.'),
         customBody: z.string().optional().describe('Override request body (raw string/JSON).')
       }),
       handler: async ({ requestId, tabId, customMethod, customHeaders, customBody }: any) => {

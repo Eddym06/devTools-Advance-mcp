@@ -29,6 +29,41 @@ const websocketMessages = new Map<string, any[]>();
 // Storage for HAR recording
 const harRecordings = new Map<string, any>();
 
+/**
+ * Read-only snapshot of the current HAR recording buffer for a tab, without
+ * stopping/consuming it (stop_har_recording deletes the entry once read).
+ * Used by the chrome://tab/{tabId}/har MCP resource so the recording can be
+ * inspected mid-flight instead of only via the stop tool's one-shot return.
+ */
+export function getHarSnapshot(tabId?: string): any {
+  const effectiveTabId = tabId || 'default';
+  const recording = harRecordings.get(effectiveTabId);
+
+  if (!recording) {
+    return {
+      log: {
+        version: '1.2',
+        creator: { name: 'Custom Chrome MCP', version: '1.0.9' },
+        pages: [],
+        entries: [],
+      },
+      recordingActive: false,
+      note: 'No active HAR recording for this tab. Call start_har_recording first.',
+    };
+  }
+
+  return {
+    log: {
+      version: '1.2',
+      creator: { name: 'Custom Chrome MCP', version: '1.0.9' },
+      pages: recording.pages,
+      entries: recording.entries,
+    },
+    recordingActive: true,
+    startTime: recording.startTime,
+  };
+}
+
 // Storage for injected scripts
 const injectedScripts = new Map<string, string[]>();
 
@@ -328,7 +363,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       inputSchema: z.object({
         requestId: z.string().describe('Request ID from list_intercepted_responses'),
         modifiedBody: z.string().optional().describe('New response body (base64 if binary)'),
-        modifiedHeaders: z.record(z.string()).optional().describe('New/modified response headers'),
+        modifiedHeaders: z.record(z.string(), z.string()).optional().describe('New/modified response headers'),
         modifiedStatusCode: z.number().optional().describe('New status code (e.g., 200, 404, 500)'),
         timeoutMs: z.number().default(15000).optional().describe('Operation timeout in milliseconds (default: 15000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -404,7 +439,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         urlPattern: z.string().describe('URL pattern to mock (supports * wildcards)'),
         responseBody: z.string().describe('Response body (JSON string, HTML, etc.)'),
         statusCode: z.number().default(200).describe('HTTP status code'),
-        headers: z.record(z.string()).optional().describe('Response headers'),
+        headers: z.record(z.string(), z.string()).optional().describe('Response headers'),
         latency: z.number().default(0).describe('Simulated latency in milliseconds'),
         method: z.string().optional().describe('HTTP method to match (GET, POST, etc.)'),
         timeoutMs: z.number().default(15000).optional().describe('Operation timeout in milliseconds (default: 15000)'),

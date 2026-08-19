@@ -13,7 +13,7 @@ This Model Context Protocol (MCP) server enables AI assistants like Claude, Roo 
 
 *   **🕵️ "Human" Navigation:** Uses your real Chrome profile. If you're logged into LinkedIn, Gmail, or your corporate ERP, your AI assistant is too.
 *   **🛡️ Undetectable:** Advanced "Shadow Profile" technology prevents browser automation blocking on complex sites.
-*   **🛠️ Robust Toolset:** Over 40+ specialized tools optimized for data scraping, specific element extraction, and visual analysis.
+*   **🛠️ Robust Toolset:** 90+ specialized tools, plus MCP resources and prompts, optimized for data scraping, specific element extraction, and visual analysis.
 *   **⚡ Fast & Safe:** Safely executes scripts and screenshots, with intelligent output truncation to prevent crashing your AI context.
 
 ---
@@ -60,6 +60,8 @@ The AI can click, type, and fill forms intelligently, waiting for elements to lo
 
 ## 🛠️ Tool List
 
+Tools are split into two tiers so the default list stays manageable for the AI: **~38 core tools** are visible from the start; **~52 advanced tools** (Network Advanced, Anti-Detection & Privacy, Service Workers, System, Performance) stay hidden until the AI calls `show_advanced_tools` (call `hide_advanced_tools` to collapse the list again).
+
 <details>
 <summary><strong>👇 Click here to view all available tools</strong></summary>
 
@@ -77,15 +79,18 @@ The AI can click, type, and fill forms intelligently, waiting for elements to lo
 | `get_html` | **Critical.** Extracts simplified or full HTML. Supports selectors. |
 | `screenshot` | Captures visual proof (png/jpeg). |
 | `get_page_metrics` | Layout and viewport analysis. |
-| `get_accessibility_tree` | See the page structure as screen readers do. |
+| `get_accessibility_tree` | See the page structure as screen readers do (advanced tools). |
+| `get_console_logs` | Read console.log/warn/error/info/debug and uncaught exceptions for a tab — capture starts automatically on first call. |
 
 ### 🖱️ Interaction
 | Tool | Description |
 |------|-------------|
 | `perform_interaction` | Click, Type, Hover, Drag & Drop with auto-wait. |
+| `fill_form` | Fill multiple fields (text/select/checkbox) in a single call instead of N `perform_interaction` calls. |
 | `execute_script` | Run custom JavaScript safely (requires `return`). |
 | `extract_element_data` | Get specific text or attributes from elements. |
 | `set_viewport` | Resize window for responsive testing. |
+| `download_file` | Click a download trigger, wait for it to finish, and get the saved file path. |
 
 ### 🛡️ Anti-Detection & Privacy
 | Tool | Description |
@@ -102,15 +107,29 @@ The AI can click, type, and fill forms intelligently, waiting for elements to lo
 | `resend_network_request` | Replay captured API calls. |
 | `start_har_recording` | Save full network logs (HAR format). |
 | `monitor_websocket_messages` | Listen to socket traffic. |
+| `emulate_network_conditions` | Throttle to Slow 3G/4G/offline to test resilience. |
+| `run_performance_audit` | Core Web Vitals (LCP, CLS) + basic timing via PerformanceObserver. |
 
 ### 🍪 Storage & Cookies
 | Tool | Description |
 |------|-------------|
 | `get_cookies` / `set_cookie` | Manage browser cookies. |
 | `get_local_storage` | Read/Write local storage data. |
+| `get_indexed_db` | List IndexedDB databases, or read records from one. |
 | `export_session` | Save current session state to file. |
+| `test_with_different_cookies` | Test a URL with a different cookie set inside a throwaway, fully isolated browser context — never touches your real session. |
 
 </details>
+
+### 📚 Resources & Prompts
+
+Beyond tools, this server exposes two other MCP primitives:
+
+* **Resources** (cacheable/listable, not just one-shot tool calls) — for each open tab:
+  `chrome://tab/{tabId}/html`, `chrome://tab/{tabId}/screenshot`, `chrome://tab/{tabId}/har`.
+* **Prompts** (pre-baked task templates that chain the tools above): `audit-accessibility`, `debug-console-errors`, `scrape-table`.
+
+In clients that support them (e.g. Claude Desktop), these show up as attachable resources / slash-style prompts, separate from the tool list.
 
 ---
 
@@ -140,6 +159,16 @@ npm install
 npm run build
 npm start
 ```
+
+Before opening a PR:
+
+```bash
+npm run lint   # ESLint (flat config)
+npm run build  # tsc type-check
+npm test       # vitest — includes an in-memory MCP client/server integration test
+```
+
+CI (`.github/workflows/ci.yml`) runs the same three steps on Node 20 and 22 for every push/PR.
 
 ---
 *Developed with ❤️ by @eddym06*

@@ -315,17 +315,13 @@ export class ChromeConnector {
     }, 5000);
 
     // ENHANCED VERIFICATION SYSTEM
-    // Wait 3 seconds before starting verification
-    console.error('⏳ Waiting 3 seconds for Chrome to fully initialize...');
-    await new Promise(r => setTimeout(r, 3000));
+    // Wait for Chrome to initialize before starting verification
+    const waitTime = 3000;
+    console.error(`⏳ Waiting ${waitTime}ms for Chrome to fully initialize...`);
+    await new Promise(r => setTimeout(r, waitTime));
 
     // Step 1: Verify process is still running via system command
     console.error('🔍 Step 1: Verifying Chrome process is running...');
-
-    // Wait for Chrome to initialize
-    const waitTime = 3000;
-    console.error(`⏳ Waiting ${waitTime}ms for process to settle...`);
-    await new Promise(r => setTimeout(r, waitTime));
 
     // Verify process is still running
     if (!this.chromeProcess) {

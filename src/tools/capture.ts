@@ -5,7 +5,6 @@
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
 import { truncateOutput } from '../utils/truncate.js';
-import { escJS } from '../utils/helpers.js';
 import { saveBase64ToFile } from '../utils/file-storage.js';
 
 export function createCaptureTools(connector: ChromeConnector) {
@@ -23,6 +22,14 @@ export function createCaptureTools(connector: ChromeConnector) {
         clipWidth: z.number().optional().describe('Clip area width'),
         clipHeight: z.number().optional().describe('Clip area height'),
         tabId: z.string().optional().describe('Tab ID (optional)')
+      }),
+      outputSchema: z.object({
+        success: z.boolean(),
+        format: z.enum(['png', 'jpeg']),
+        fullPage: z.boolean(),
+        filePath: z.string().describe('Absolute path to the saved image on disk'),
+        preview: z.string().describe('First 200 chars of the base64 data, for a quick sanity check'),
+        message: z.string(),
       }),
       handler: async ({ format, quality, fullPage, clipX, clipY, clipWidth, clipHeight, tabId }: any) => {
         await connector.verifyConnection();
@@ -125,6 +132,23 @@ export function createCaptureTools(connector: ChromeConnector) {
         tabId: z.string().optional().describe('Tab ID (optional)'),
         outerHTML: z.boolean().default(true).describe('Get outer HTML (includes the element tag itself)')
       }),
+      // Covers both the success shape and the "element not found" soft-failure
+      // shape (see handler below) — every field but `success` is optional so
+      // both branches validate against the same schema.
+      outputSchema: z.object({
+        success: z.boolean(),
+        selector: z.string().optional(),
+        html: z.string().optional(),
+        size: z.number().optional(),
+        truncated: z.boolean().optional(),
+        data: z.string().optional(),
+        totalSize: z.number().optional(),
+        truncatedSize: z.number().optional(),
+        message: z.string().optional(),
+        suggestion: z.string().optional(),
+        error: z.string().optional(),
+        hint: z.string().optional(),
+      }),
       handler: async ({ selector, tabId, outerHTML }: any) => {
         await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
@@ -135,9 +159,10 @@ export function createCaptureTools(connector: ChromeConnector) {
         let expression;
 
         if (selector) {
-          const safeSelector = escJS(selector);
+          // JSON.stringify produces a fully-escaped JS string literal (quotes,
+          // backslashes, unicode) — safer and simpler than hand-rolled escaping.
           expression = `(function() {
-            const el = document.querySelector('${safeSelector}');
+            const el = document.querySelector(${JSON.stringify(selector)});
             if (!el) return 'ELEMENT_NOT_FOUND';
             return ${outerHTML ? 'el.outerHTML' : 'el.innerHTML'};
           })()`;
@@ -252,37 +277,9 @@ export function createCaptureTools(connector: ChromeConnector) {
           }
         };
       }
-    },
-
-    // Get accessibility tree
-    {
-      name: 'get_accessibility_tree',
-      description: 'Get the accessibility tree of the page (ARIA roles, labels, interactive elements).',
-      inputSchema: z.object({
-        tabId: z.string().optional().describe('Tab ID (optional)')
-      }),
-      handler: async ({ tabId }: any) => {
-        await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
-        const { Accessibility } = client;
-
-        try {
-          await Accessibility.enable();
-          const { nodes } = await Accessibility.getFullAXTree();
-          return {
-            success: true,
-            nodeCount: nodes.length,
-            nodes: nodes.slice(0, 100) // Limit to first 100 nodes
-          };
-        } catch (err: any) {
-          // Some Chrome builds or remote debug modes don't support Accessibility domain
-          return {
-            success: false,
-            error: `Accessibility domain not available: ${err.message}`,
-            hint: 'Try using get_html to inspect the DOM structure instead.'
-          };
-        }
-      }
     }
+    // Note: get_accessibility_tree lives in network-accessibility.ts (advanced tools).
+    // It used to be duplicated here with a weaker implementation; removed to avoid
+    // two tools sharing the same name (the last one registered was silently winning).
   ];
 }

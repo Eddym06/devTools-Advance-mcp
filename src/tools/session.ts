@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
 import type { SessionData } from '../types/index.js';
+import { withTimeout } from '../utils/helpers.js';
 
 export function createSessionTools(connector: ChromeConnector) {
   return [
@@ -374,6 +375,114 @@ export function createSessionTools(connector: ChromeConnector) {
           },
           message: 'Session imported successfully'
         };
+      }
+    },
+
+    // Inspect IndexedDB
+    {
+      name: 'get_indexed_db',
+      description:
+        'Inspect IndexedDB. Without databaseName: lists all databases and their object store names. ' +
+        'With databaseName: reads records from every object store in that database (capped by "limit" each).',
+      inputSchema: z.object({
+        databaseName: z.string().optional().describe('Database to read from. Omit to just list databases.'),
+        limit: z.number().default(20).describe('Max records to return per object store when databaseName is given'),
+        tabId: z.string().optional().describe('Tab ID (optional)')
+      }),
+      handler: async ({ databaseName, limit = 20, tabId }: any) => {
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Runtime } = client;
+
+        await Runtime.enable();
+
+        if (!databaseName) {
+          const listScript = `(async function() {
+            if (!indexedDB.databases) return { supported: false };
+            const dbs = await indexedDB.databases();
+            return { supported: true, databases: dbs.map(d => ({ name: d.name, version: d.version })) };
+          })()`;
+
+          const result: any = await Runtime.evaluate({ expression: listScript, awaitPromise: true, returnByValue: true });
+          if (result.exceptionDetails) {
+            throw new Error(`Failed to list IndexedDB databases: ${result.exceptionDetails.exception?.description || 'unknown error'}`);
+          }
+          return { success: true, ...result.result.value };
+        }
+
+        // indexedDB.open() silently CREATES an empty database if the name
+        // doesn't exist (e.g. a typo) — check it's really there first, since
+        // this is meant to be a read-only inspection tool.
+        const readScript = `(async function() {
+          if (indexedDB.databases) {
+            const existing = await indexedDB.databases();
+            if (!existing.some((d) => d.name === ${JSON.stringify(databaseName)})) {
+              return { notFound: true, availableDatabases: existing.map((d) => d.name) };
+            }
+          }
+          return new Promise((resolve, reject) => {
+            const req = indexedDB.open(${JSON.stringify(databaseName)});
+            req.onerror = () => reject(req.error ? req.error.message : 'Failed to open database');
+            req.onsuccess = () => {
+              const db = req.result;
+              const storeNames = Array.from(db.objectStoreNames);
+              if (storeNames.length === 0) { db.close(); resolve({ stores: {} }); return; }
+
+              const tx = db.transaction(storeNames, 'readonly');
+              const stores = {};
+              let remaining = storeNames.length;
+              const done = () => { remaining--; if (remaining === 0) { db.close(); resolve({ stores }); } };
+
+              for (const name of storeNames) {
+                const records = [];
+                let count = 0;
+                const cursorReq = tx.objectStore(name).openCursor();
+                cursorReq.onsuccess = (e) => {
+                  const cursor = e.target.result;
+                  if (cursor && count < ${limit}) {
+                    records.push({ key: cursor.key, value: cursor.value });
+                    count++;
+                    cursor.continue();
+                  } else {
+                    stores[name] = records;
+                    done();
+                  }
+                };
+                cursorReq.onerror = () => { stores[name] = { error: 'Failed to read store' }; done(); };
+              }
+            };
+          });
+        })()`;
+
+        const result: any = await withTimeout(
+          Runtime.evaluate({ expression: readScript, awaitPromise: true, returnByValue: true }),
+          15000,
+          'IndexedDB read timed out'
+        );
+        if (result.exceptionDetails) {
+          throw new Error(`Failed to read IndexedDB: ${result.exceptionDetails.exception?.description || 'unknown error'}`);
+        }
+
+        const value = result.result.value;
+        if (value.notFound) {
+          return {
+            success: false,
+            database: databaseName,
+            error: `Database "${databaseName}" does not exist`,
+            availableDatabases: value.availableDatabases,
+          };
+        }
+
+        const serialized = JSON.stringify(value);
+        if (serialized.length > 50000) {
+          return {
+            success: false,
+            database: databaseName,
+            error: `Result too large (${serialized.length} chars). Lower "limit" or target fewer object stores.`,
+          };
+        }
+
+        return { success: true, database: databaseName, ...value };
       }
     }
   ];

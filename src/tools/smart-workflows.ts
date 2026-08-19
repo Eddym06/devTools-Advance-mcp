@@ -5,8 +5,8 @@
 
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
-import { escJS } from '../utils/helpers.js';
 import { saveBase64ToFile } from '../utils/file-storage.js';
+import { humanDelay } from '../utils/helpers.js';
 
 export function createSmartWorkflowTools(connector: ChromeConnector) {
   return [
@@ -68,7 +68,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
 
           if (clickSelector) {
             await Runtime.evaluate({
-              expression: `document.querySelector('${escJS(clickSelector)}')?.click()`,
+              expression: `document.querySelector(${JSON.stringify(clickSelector)})?.click()`,
               userGesture: true
             });
           } else if (navigateUrl) {
@@ -109,7 +109,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
       inputSchema: z.object({
         urlPattern: z.string().describe('URL pattern to intercept (e.g., "**/api/**", "*/graphql*")'),
         modifications: z.object({
-          addHeaders: z.record(z.string()).optional().describe('Headers to add/override as object: { "X-Custom": "value" }'),
+          addHeaders: z.record(z.string(), z.string()).optional().describe('Headers to add/override as object: { "X-Custom": "value" }'),
           removeHeaders: z.array(z.string()).optional().describe('Header names to remove as array: ["X-Old"]'),
           modifyBody: z.string().optional().describe('New request body (replaces original)'),
           modifyMethod: z.string().optional().describe('New HTTP method (GET, POST, PUT, etc.)'),
@@ -215,7 +215,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
             case 'click':
               if (!action.selector) throw new Error('selector required for click action');
               await Runtime.evaluate({
-                expression: `document.querySelector('${escJS(action.selector)}')?.click()`,
+                expression: `document.querySelector(${JSON.stringify(action.selector)})?.click()`,
                 userGesture: true
               });
               break;
@@ -297,7 +297,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
             case 'click':
               if (!selector) throw new Error('selector is required for click action');
               await Runtime.evaluate({
-                expression: `document.querySelector('${escJS(selector)}')?.click()`,
+                expression: `document.querySelector(${JSON.stringify(selector)})?.click()`,
                 userGesture: true
               });
               break;
@@ -310,7 +310,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
             case 'type':
               if (!selector || !text) throw new Error('selector and text are required for type action');
               await Runtime.evaluate({
-                expression: `document.querySelector('${escJS(selector)}')?.focus()`,
+                expression: `document.querySelector(${JSON.stringify(selector)})?.focus()`,
                 userGesture: true
               });
               for (const char of text) {
@@ -389,7 +389,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
               new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => reject('Timeout waiting for selector'), ${timeout});
                 const check = () => {
-                  if (document.querySelector('${escJS(waitForSelector)}')) {
+                  if (document.querySelector(${JSON.stringify(waitForSelector)})) {
                     clearTimeout(timeout);
                     resolve(true);
                   } else {
@@ -449,7 +449,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
       inputSchema: z.object({
         url: z.string().describe('API endpoint URL'),
         method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET').describe('HTTP method'),
-        headers: z.union([z.record(z.string()), z.string()]).optional().describe('Request headers as object {"Content-Type": "application/json"} OR JSON string'),
+        headers: z.union([z.record(z.string(), z.string()), z.string()]).optional().describe('Request headers as object {"Content-Type": "application/json"} OR JSON string'),
         body: z.string().optional().describe('Request body (JSON string for POST/PUT)'),
         includeCredentials: z.boolean().default(true).describe('Include cookies and auth in request'),
         tabId: z.string().optional().describe('Tab ID (optional)')
@@ -579,7 +579,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
               switch (step.action) {
                 case 'click':
                   await Runtime.evaluate({
-                    expression: `document.querySelector('${escJS(step.selector || '')}')?.click()`,
+                    expression: `document.querySelector(${JSON.stringify(step.selector || '')})?.click()`,
                     userGesture: true
                   });
                   stepResult.success = true;
@@ -587,7 +587,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
 
                 case 'type':
                   await Runtime.evaluate({
-                    expression: `document.querySelector('${escJS(step.selector || '')}')?.focus()`,
+                    expression: `document.querySelector(${JSON.stringify(step.selector || '')})?.focus()`,
                     userGesture: true
                   });
                   for (const char of step.text || '') {
@@ -723,7 +723,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
               new Promise((resolve, reject) => {
                 const to = setTimeout(() => reject('Timeout'), ${timeout});
                 const check = () => {
-                  if (document.querySelector('${escJS(waitForSelector)}')) { clearTimeout(to); resolve(true); }
+                  if (document.querySelector(${JSON.stringify(waitForSelector)})) { clearTimeout(to); resolve(true); }
                   else setTimeout(check, 100);
                 };
                 check();
@@ -907,7 +907,9 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
     // ═══════════════════════════════════════════════════════════════════
     {
       name: 'test_with_different_cookies',
-      description: 'Test a page with modified cookies. Saves original cookies, applies test cookies, optionally restores.',
+      description:
+        'Test a page with a set of cookies in a throwaway, fully isolated browser context (like an incognito ' +
+        'window) — the real profile\'s cookies/session are never read or touched.',
       inputSchema: z.object({
         url: z.string().describe('URL to test'),
         cookies: z.array(z.object({
@@ -916,79 +918,139 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
           domain: z.string().optional(),
           path: z.string().optional()
         })).describe('Cookies to set for testing'),
-        restoreOriginal: z.boolean().default(true).describe('Restore original cookies after test'),
-        extractContent: z.boolean().default(true).describe('Extract page content with new cookies'),
-        tabId: z.string().optional().describe('Tab ID (optional)')
+        extractContent: z.boolean().default(true).describe('Extract page content with the test cookies'),
       }),
-      handler: async ({ url, cookies, restoreOriginal, extractContent, tabId }: any) => {
+      handler: async ({ url, cookies, extractContent }: any) => {
+        await connector.verifyConnection();
+
+        const browser = connector.getBrowserContext()?.browser();
+        if (!browser) {
+          throw new Error(
+            'No Playwright browser handle available (browser was launched but the Playwright wrapper failed to ' +
+            'attach). Try launch_chrome_with_profile again.'
+          );
+        }
+
+        // A brand-new context has its own cookie jar and storage — nothing
+        // done here can read from or leak into the user's real logged-in
+        // session, unlike the old approach of mutating the live tab's cookies.
+        const testContext = await browser.newContext();
         try {
-          await connector.verifyConnection();
-          const client = await connector.getTabClient(tabId);
-          const { Network, Page, Runtime } = client;
-
-          await Network.enable();
-          await Page.enable();
-          await Runtime.enable();
-
-          // Step 1: Save original cookies
-          let originalCookies: any[] = [];
-          if (restoreOriginal) {
-            const result = await Network.getCookies({});
-            originalCookies = result.cookies;
+          if (cookies.length > 0) {
+            await testContext.addCookies(
+              cookies.map((c: any) => ({
+                name: c.name,
+                value: c.value,
+                domain: c.domain || new URL(url).hostname,
+                path: c.path || '/',
+              }))
+            );
           }
 
-          // Step 2: Set new cookies
-          for (const cookie of cookies) {
-            await Network.setCookie({
-              name: cookie.name,
-              value: cookie.value,
-              domain: cookie.domain || new URL(url).hostname,
-              path: cookie.path || '/'
-            });
-          }
+          const page = await testContext.newPage();
+          await page.goto(url, { waitUntil: 'load' });
 
-          // Step 3: Navigate with new cookies
-          await Page.navigate({ url });
-          await Page.loadEventFired();
-
-          // Step 4: Extract content if requested
-          let content;
-          if (extractContent) {
-            const result = await Runtime.evaluate({
-              expression: 'document.body.innerText',
-              returnByValue: true
-            });
-            content = result.result.value;
-          }
-
-          // Step 5: Restore original cookies
-          if (restoreOriginal) {
-            // Clear current cookies
-            const currentCookies = await Network.getCookies({});
-            for (const cookie of currentCookies.cookies) {
-              await Network.deleteCookies({ name: cookie.name, domain: cookie.domain });
-            }
-            // Restore original
-            for (const cookie of originalCookies) {
-              await Network.setCookie(cookie);
-            }
-          }
+          // String form (not a typed callback) since this project's tsconfig
+          // has no "dom" lib — Playwright evaluates it as a page-side expression.
+          const content = extractContent ? await page.evaluate('document.body.innerText') : undefined;
 
           return {
             success: true,
-            url: url,
+            url,
             cookiesSet: cookies.length,
-            originalCookiesRestored: restoreOriginal,
-            content: extractContent ? content : undefined,
-            message: `Tested with ${cookies.length} modified cookie(s)`
+            isolated: true,
+            content,
+            message: `Tested with ${cookies.length} cookie(s) in an isolated context — the real session was never touched`,
           };
-        } catch (error: any) {
-          return {
-            success: false,
-            error: error.message,
-            url: url
-          };
+        } finally {
+          await testContext.close();
         }
+      }
+    },
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SMART TOOL: Fill Form
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      name: 'fill_form',
+      description:
+        'Fill multiple form fields in a single call instead of N perform_interaction calls. Auto-detects text ' +
+        'inputs/textareas, <select>, and checkboxes/radios based on each element.',
+      inputSchema: z.object({
+        fields: z.array(z.object({
+          selector: z.string().describe('CSS selector for the field'),
+          value: z.string().describe('Value to set. For a checkbox/radio, use "true" or "false".'),
+        })).describe('Fields to fill, in order'),
+        submitSelector: z.string().optional().describe('CSS selector of a submit button to click after filling'),
+        tabId: z.string().optional().describe('Tab ID (optional)'),
+      }),
+      handler: async ({ fields, submitSelector, tabId }: any) => {
+        await connector.verifyConnection();
+        const client = await connector.getTabClient(tabId);
+        const { Runtime } = client;
+        await Runtime.enable();
+
+        const results: Array<{ selector: string; success: boolean; error?: string }> = [];
+
+        for (const field of fields) {
+          const script = `(function() {
+            const el = document.querySelector(${JSON.stringify(field.selector)});
+            if (!el) return { ok: false, error: 'Element not found' };
+            const tag = el.tagName.toLowerCase();
+            const type = (el.type || '').toLowerCase();
+            if (tag === 'select') {
+              el.value = ${JSON.stringify(field.value)};
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (type === 'checkbox' || type === 'radio') {
+              el.checked = ${JSON.stringify(field.value)} === 'true';
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            } else {
+              el.focus();
+              el.value = ${JSON.stringify(field.value)};
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return { ok: true };
+          })()`;
+
+          const result: any = await Runtime.evaluate({ expression: script, returnByValue: true });
+
+          if (result.exceptionDetails) {
+            results.push({
+              selector: field.selector,
+              success: false,
+              error: result.exceptionDetails.exception?.description || 'Evaluation error',
+            });
+          } else {
+            const value = result.result.value;
+            results.push({ selector: field.selector, success: value.ok, error: value.error });
+          }
+
+          await humanDelay(50, 150);
+        }
+
+        let submitted = false;
+        if (submitSelector) {
+          const submitResult: any = await Runtime.evaluate({
+            expression: `(function() {
+              const el = document.querySelector(${JSON.stringify(submitSelector)});
+              if (!el) return false;
+              el.click();
+              return true;
+            })()`,
+          });
+          submitted = !!submitResult.result?.value;
+        }
+
+        const failed = results.filter((r) => !r.success);
+
+        return {
+          success: failed.length === 0,
+          filled: results.length - failed.length,
+          failed: failed.length,
+          results,
+          submitted,
+        };
       }
     }
   ];

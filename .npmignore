@@ -1,7 +1,8 @@
 # Source files
 src/
 tsconfig.json
-.eslintrc.json
+eslint.config.js
+vitest.config.ts
 
 # Development
 *.log
@@ -15,7 +16,14 @@ tsconfig.json
 # Git
 .git/
 .gitignore
+.github/
 
 # Testing
 coverage/
 *.test.ts
+
+# Not needed at runtime — GitHub renders README images straight from the
+# repo, not from the published tarball, and demo recordings are dev-only.
+# (logo.png alone was 4.5MB, dominating every `npx` install.)
+assets/
+recordings/
