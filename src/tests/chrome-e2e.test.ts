@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
 import net from 'net';
+import http from 'http';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -91,6 +92,8 @@ describe.skipIf(!run)('real-Chrome E2E smoke', () => {
   let profileDir: string | null = null;
   let port = 0;
   let client: Client | null = null;
+  let httpServer: http.Server | null = null;
+  let httpPort = 0;
 
   beforeAll(async () => {
     port = await freePort();
@@ -111,6 +114,25 @@ describe.skipIf(!run)('real-Chrome E2E smoke', () => {
     );
     await waitForCdp(port);
 
+    // Local HTTP server the browser actually talks to (interception/HAR tests).
+    httpServer = http.createServer((req, res) => {
+      const url = req.url ?? '/';
+      if (url.startsWith('/api/')) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ ok: true, path: url }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(
+        '<!doctype html><html><body><h1>e2e</h1>' +
+          "<script>fetch('/api/data').then(r=>r.text()).then(t=>{document.title='api:'+t})</script>" +
+          '</body></html>'
+      );
+    });
+    httpPort = await new Promise<number>((resolve) => {
+      httpServer!.listen(0, '127.0.0.1', () => resolve((httpServer!.address() as net.AddressInfo).port));
+    });
+
     const serverEntry = fileURLToPath(new URL('../../dist/index.js', import.meta.url));
     client = new Client({ name: 'e2e-smoke', version: '0.0.0' });
     const transport = new StdioClientTransport({
@@ -126,6 +148,18 @@ describe.skipIf(!run)('real-Chrome E2E smoke', () => {
     }
     await killTree(chrome);
     chrome = null;
+    if (httpServer) {
+      // Chrome may hold keep-alive sockets open — drop them before closing.
+      (httpServer as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => resolve(), 2000);
+        httpServer!.close(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      httpServer = null;
+    }
     if (profileDir) {
       // Chrome may still be releasing profile files — retry, never fail the suite.
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -137,7 +171,7 @@ describe.skipIf(!run)('real-Chrome E2E smoke', () => {
         }
       }
     }
-  }, 15_000);
+  }, 20_000);
 
   it('lists the core tools over the real MCP protocol', async () => {
     const { tools } = await client!.listTools();
@@ -163,4 +197,60 @@ describe.skipIf(!run)('real-Chrome E2E smoke', () => {
     });
     expect(blocked.isError).toBe(true);
   });
+
+  it('captures live requests through interception against a local HTTP server', async () => {
+    const show = async () => client!.callTool({ name: 'show_advanced_tools', arguments: {} });
+    await show();
+
+    await client!.callTool({
+      name: 'start_capturing_network_requests',
+      arguments: { patterns: ['*api*'], autoContinue: true },
+    });
+    await client!.callTool({
+      name: 'browser_action',
+      arguments: { action: 'navigate', url: `http://127.0.0.1:${httpPort}/`, waitUntil: 'load' },
+    });
+    // Give the page's fetch() time to fire and be captured.
+    await new Promise((r) => setTimeout(r, 1200));
+
+    const shown = await client!.callTool({ name: 'show_captured_network_traffic', arguments: {} });
+    const shownPayload = JSON.parse(firstText(shown.content));
+    expect(shownPayload.count).toBeGreaterThan(0);
+
+    const stopped = await client!.callTool({ name: 'stop_capturing_network_requests', arguments: {} });
+    expect(JSON.parse(firstText(stopped.content)).success).toBe(true);
+  }, 30_000);
+
+  it('records and exports a valid HAR against a local HTTP server', async () => {
+    const show = async () => client!.callTool({ name: 'show_advanced_tools', arguments: {} });
+    await show();
+
+    // Ensure the tab is on the local page BEFORE recording (reloading
+    // about:blank produces no network entries).
+    await client!.callTool({
+      name: 'browser_action',
+      arguments: { action: 'navigate', url: `http://127.0.0.1:${httpPort}/`, waitUntil: 'load' },
+    });
+    await new Promise((r) => setTimeout(r, 600));
+
+    await client!.callTool({ name: 'start_har_recording', arguments: {} });
+    await client!.callTool({
+      name: 'browser_action',
+      arguments: { action: 'reload', timeout: 15000 },
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const stopped = await client!.callTool({ name: 'stop_har_recording', arguments: {} });
+    const stoppedPayload = JSON.parse(firstText(stopped.content));
+    expect(stoppedPayload.success).toBe(true);
+    expect(stoppedPayload.entriesCount).toBeGreaterThan(0);
+    expect(stoppedPayload.har.log.version).toBe('1.2');
+    expect(stoppedPayload.har.log.creator.version).toMatch(/^\d+\.\d+\.\d+/);
+
+    const exported = await client!.callTool({ name: 'export_har_file', arguments: { filename: 'e2e-smoke.har' } });
+    const exportPayload = JSON.parse(firstText(exported.content));
+    expect(exportPayload.success).toBe(true);
+    expect(fs.existsSync(exportPayload.filepath)).toBe(true);
+    fs.rmSync(exportPayload.filepath, { force: true });
+  }, 30_000);
 });

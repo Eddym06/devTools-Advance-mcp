@@ -5,7 +5,8 @@
 
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
-import { withTimeout, getPackageVersion } from '../utils/helpers.js';
+import { withTimeout } from '../utils/helpers.js';
+import { createHarLog, headerValueFromList, timingsFromCdpTiming } from '../utils/har.js';
 import { resolveOutputPath } from '../utils/file-storage.js';
 import * as fs from 'fs/promises';
 
@@ -92,24 +93,14 @@ export function getHarSnapshot(tabId?: string): any {
 
   if (!recording) {
     return {
-      log: {
-        version: '1.2',
-        creator: { name: 'Custom Chrome MCP', version: getPackageVersion() },
-        pages: [],
-        entries: [],
-      },
+      log: createHarLog([], []).log,
       recordingActive: false,
       note: 'No active HAR recording for this tab. Call start_har_recording first.',
     };
   }
 
   return {
-    log: {
-      version: '1.2',
-      creator: { name: 'Custom Chrome MCP', version: getPackageVersion() },
-      pages: recording.pages,
-      entries: recording.entries,
-    },
+    log: createHarLog(recording.pages || [], recording.entries || []).log,
     recordingActive: true,
     startTime: recording.startTime,
   };
@@ -1221,20 +1212,23 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         Network.responseReceived((params: any) => {
           const entry = recording.entries.find((e: any) => e.requestId === params.requestId);
           if (entry) {
+            const headers: Array<{ name: string; value: string }> = Object.entries(params.response.headers || {}).map(([name, value]) => ({ name, value: String(value) }));
             entry.response = {
               status: params.response.status,
               statusText: params.response.statusText,
               httpVersion: params.response.protocol || 'HTTP/1.1',
-              headers: Object.entries(params.response.headers || {}).map(([name, value]) => ({ name, value })),
+              headers,
               cookies: [],
               content: {
                 size: 0,
                 mimeType: params.response.mimeType || 'application/octet-stream'
               },
-              redirectURL: params.response.headers?.['Location'] ?? '',
+              redirectURL: headerValueFromList(headers, 'location') ?? '',
               headersSize: -1,
               bodySize: -1
             };
+            // Map CDP ResourceTiming → HAR timings where measured.
+            entry.timings = timingsFromCdpTiming(params.response.timing);
           }
         });
 
@@ -1275,17 +1269,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           throw new Error('No active HAR recording');
         }
         
-        const har = {
-          log: {
-            version: '1.2',
-            creator: {
-              name: 'Custom Chrome MCP',
-              version: getPackageVersion()
-            },
-            pages: recording.pages,
-            entries: recording.entries
-          }
-        };
+        const har = createHarLog(recording.pages || [], recording.entries || []);
 
         // Park the finished recording so export_har_file can still write it
         // after stopping (the documented stop → export flow).
@@ -1345,17 +1329,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             };
           }
 
-          const har = {
-            log: {
-              version: '1.2',
-              creator: {
-                name: 'Custom Chrome MCP',
-                version: getPackageVersion()
-              },
-              pages: source.pages,
-              entries: source.entries
-            }
-          };
+          const har = createHarLog(source.pages, source.entries);
 
           const safeName = filename.toLowerCase().endsWith('.har') ? filename : `${filename}.har`;
           const { filePath } = resolveOutputPath(outputDir, safeName, 'chrome-mcp-har');

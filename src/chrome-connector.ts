@@ -13,6 +13,7 @@ import * as os from 'os';
 import { promisify } from 'util';
 
 import { withTimeout } from './utils/helpers.js';
+import { reportProgress } from './utils/log.js';
 
 const execAsync = promisify(exec);
 
@@ -59,7 +60,9 @@ export class ChromeConnector {
   private browserContext: BrowserContext | null = null;
   private chromeProcess: ChildProcess | null = null;
   private persistentClients: Map<string, any> = new Map(); // Persistent clients for interceptors
-  private stealthApplied = false; // Applied once per connection session
+  private stealthApplied = false; // Applied once per connection session (legacy guard)
+  /** Targets that already have the stealth script registered (per-tab guard). */
+  private stealthTabs = new Set<string>();
   private cleaningUp = false; // Re-entrancy guard for process-death cleanup
   /** Callbacks invoked whenever the CDP connection is torn down (disconnect / process death). */
   private disconnectHandlers = new Set<() => void>();
@@ -288,6 +291,7 @@ export class ChromeConnector {
     console.error(`🚀 Launching Chrome Native...`);
     console.error(`   User Data: ${finalUserDataDir}`);
     console.error(`   Profile: ${profileDirectory}`);
+    await reportProgress(15, 100, 'Shadow profile ready — launching Chrome');
 
     const args = [
       `--remote-debugging-port=${this.port}`,
@@ -341,6 +345,7 @@ export class ChromeConnector {
     // Don't call unref() - keep the process attached to the MCP server
 
     console.error(`✅ Chrome process spawned (PID: ${spawnedPid})`);
+    await reportProgress(30, 100, 'Chrome process started');
 
     // Close file descriptors after Chrome has started
     setTimeout(() => {
@@ -442,6 +447,7 @@ export class ChromeConnector {
 
     // Apply stealth mode immediately after CDP connection
     await this.applyStealthMode();
+    await reportProgress(60, 100, 'Connected to CDP — applying stealth');
 
     // Step 4: Verify browser is responsive (can list targets)
     console.error('🔍 Step 4: Verifying browser responsiveness...');
@@ -532,6 +538,7 @@ export class ChromeConnector {
       this.chromeProcess = null;
       this.currentTabId = null;
       this.stealthApplied = false;
+      this.stealthTabs.clear();
 
       console.error('✅ Internal state cleared. Ready for new launch.');
     } finally {
@@ -1013,7 +1020,21 @@ export class ChromeConnector {
    * @param force  Skip the "already applied" guard (used by the explicit tool call).
    */
   async applyStealthMode(tabId?: string, force = false): Promise<void> {
-    if (!force && this.stealthApplied) return;
+    // Resolve which target we would attach to so the per-tab guard is exact
+    // (stealth must apply to EVERY tab, not just the first one — but never
+    // twice, or addScriptToEvaluateOnNewDocument would stack duplicates).
+    let resolvedId = tabId ?? this.currentTabId ?? undefined;
+    if (!resolvedId) {
+      try {
+        const tabs = await this.listTabs();
+        const page = tabs.find((t) => t.type === 'page');
+        if (page) resolvedId = page.id;
+      } catch { /* not connected yet */ }
+    }
+
+    if (!force && resolvedId && this.stealthTabs.has(resolvedId)) return;
+    if (!force && !resolvedId && this.stealthApplied) return;
+
     try {
       const client = await this.getTabClient(tabId);
       const { Runtime, Page } = client;
@@ -1031,7 +1052,8 @@ export class ChromeConnector {
       } catch (_) { /* page may not exist yet – that's OK */ }
 
       this.stealthApplied = true;
-      console.error('[Stealth] Stealth mode applied automatically');
+      if (resolvedId) this.stealthTabs.add(resolvedId);
+      console.error(`[Stealth] Stealth mode applied (target: ${resolvedId ?? 'default'})`);
     } catch (err) {
       console.error('[Stealth] Could not apply stealth mode (non-fatal):', (err as Error).message);
     }
@@ -1084,6 +1106,11 @@ export class ChromeConnector {
     try {
       const newTab = await CDP.New({ port: this.port, url });
 
+      // Keep the stealth promise honest: every NEW tab gets the script too.
+      if (newTab.type === 'page') {
+        this.applyStealthMode(newTab.id).catch(() => { /* best effort */ });
+      }
+
       return {
         id: newTab.id,
         type: newTab.type,
@@ -1113,6 +1140,8 @@ export class ChromeConnector {
     try {
       await CDP.Activate({ port: this.port, id: tabId });
       this.currentTabId = tabId;
+      // Stealth should follow the user to whichever tab becomes active.
+      this.applyStealthMode(tabId).catch(() => { /* best effort */ });
     } catch (error) {
       throw new Error(`Failed to activate tab: ${(error as Error).message}`);
     }

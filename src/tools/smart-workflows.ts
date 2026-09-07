@@ -1038,7 +1038,13 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
               el.dispatchEvent(new Event('change', { bubbles: true }));
             } else {
               el.focus();
-              el.value = ${JSON.stringify(field.value)};
+              // Use the native value setter so React/Vue controlled inputs
+              // actually register the change (direct el.value= bypasses them).
+              const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+                : (el instanceof HTMLInputElement ? HTMLInputElement.prototype : null);
+              const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              if (setter) setter.call(el, ${JSON.stringify(field.value)});
+              else el.value = ${JSON.stringify(field.value)};
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
             }

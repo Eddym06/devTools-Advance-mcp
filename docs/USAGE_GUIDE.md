@@ -246,6 +246,20 @@ Find `tabId` via `manage_tabs` (`action:"list"`).
 - `close_browser` / server shutdown only close a Chrome that this MCP launched;
   your own browsing sessions are never force-killed.
 
+### Modern MCP behaviors (v1.5+)
+
+- High-traffic tools declare an **output schema** → clients receive typed
+  `structuredContent` (not only JSON text).
+- Long operations emit **progress** when the call includes
+  `_meta.progressToken` (Chrome launch reports live stages).
+- Server diagnostics use standardized **logging** (`logging/message`),
+  filtered by the `MCP_LOG_LEVEL` env var.
+- **Optional confirmation gate:** run the server with
+  `CHROME_MCP_CONFIRM=on` and destructive tools
+  (`clear_cookies`, `import_session`, `unregister_service_worker`,
+  `clear_all_mocks`, …) refuse to run unless the call passes `_confirm: true`
+  (the agent must have asked the user first).
+
 ---
 
 ## 🚫 Common Mistakes

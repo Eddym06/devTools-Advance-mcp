@@ -51,11 +51,32 @@ function tabIdFromVariables(variables: Record<string, unknown>): string {
   return Array.isArray(value) ? String(value[0]) : String(value);
 }
 
+/**
+ * Completion provider for the `{tabId}` resource variable: clients can offer
+ * live tab IDs while typing a chrome://tab/… resource URI.
+ */
+function tabIdCompletions(connector: ChromeConnector): (value: string) => Promise<string[]> {
+  return async () => {
+    try {
+      await connector.verifyConnection();
+    } catch {
+      return []; // no browser attached yet
+    }
+    try {
+      const tabs = await connector.listTabs();
+      return tabs.filter((t) => t.type === 'page').map((t) => t.id);
+    } catch {
+      return [];
+    }
+  };
+}
+
 export function registerResources(server: McpServer, connector: ChromeConnector): void {
   server.registerResource(
     'tab-html',
     new ResourceTemplate('chrome://tab/{tabId}/html', {
       list: () => listTabResources(connector, 'html'),
+      complete: { tabId: tabIdCompletions(connector) },
     }),
     {
       title: 'Tab HTML',
@@ -88,6 +109,7 @@ export function registerResources(server: McpServer, connector: ChromeConnector)
     'tab-screenshot',
     new ResourceTemplate('chrome://tab/{tabId}/screenshot', {
       list: () => listTabResources(connector, 'screenshot'),
+      complete: { tabId: tabIdCompletions(connector) },
     }),
     {
       title: 'Tab Screenshot',
@@ -112,6 +134,7 @@ export function registerResources(server: McpServer, connector: ChromeConnector)
     'tab-har',
     new ResourceTemplate('chrome://tab/{tabId}/har', {
       list: () => listTabResources(connector, 'har'),
+      complete: { tabId: tabIdCompletions(connector) },
     }),
     {
       title: 'Tab HAR Recording',

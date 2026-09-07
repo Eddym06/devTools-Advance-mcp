@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - hardening pass (Phase 1)
+## [1.5.0] - 2026-08-19
 
 ### 🔒 Security
 - **CDP debug port no longer open to the web.** Chrome is launched with a restrictive
@@ -72,6 +72,34 @@ All notable changes to this project will be documented in this file.
   machine-specific absolute paths; `docs/mcp-config-example.json` is now a reusable npx template.
 - `scripts/validate-docs.mjs` + `npm run docs:check`: fails CI/build docs whenever a guide cites a
   tool that does not exist (guards against the v1.0→v1.4 drift class). CI now runs this step.
+
+### ✨ Phase 3 — MCP 2026 polish
+- **Structured output:** shared loose output schemas (`src/schemas.ts`, `success` required +
+  passthrough) for ~35 high-traffic tools → the SDK validates results and forwards typed
+  `structuredContent` (`outputSchema` declared next to handlers still wins).
+- **Progress notifications:** tool calls that pass `_meta.progressToken` receive live
+  `notifications/progress` (0/100 wrapper + granular stages during `launch_chrome_with_profile`).
+  Long handlers call `reportProgress()` from `utils/log.ts`.
+- **Standardized logging:** server → client `logging/message` via `sendLoggingMessage`
+  (`utils/log.ts`), gated by `MCP_LOG_LEVEL` (default `info`).
+- **Resource completions:** `chrome://tab/{tabId}/…` resources now autocomplete live tab IDs.
+- **User-confirmation gate (optional):** `CHROME_MCP_CONFIRM=on` requires `_confirm:true` for
+  destructive tools (`clear_cookies`, `delete_cookie`, `import_session`,
+  `unregister_service_worker`, `clear_all_mocks`, …) until hosts support full MCP elicitation.
+- **Trusted interaction:** `perform_interaction` clicks use real CDP mouse events at the element
+  center (with visibility/actionability checks, synthetic fallback via `mode`), typing uses
+  `Input.insertText` on a focused/selected field; `fill_form` uses the native value setter so
+  React/Vue controlled inputs register changes.
+- **Stealth per tab:** the stealth script now auto-applies to every NEW/activated tab (per-target
+  guard prevents duplicate registration) — not just the first tab.
+- **HAR conformance:** central `utils/har.ts` (`createHarLog`, guaranteed HAR 1.2 shape, creator
+  version from package.json), CDP ResourceTiming → HAR timings mapping, case-insensitive
+  `redirectURL`; unit-tested.
+- **Service workers:** `unregister_service_worker` / `update_service_worker` use the CDP
+  `ServiceWorker` domain → work for any scope, not only the current tab origin.
+- **CI/release:** publish workflow on `v*` tags (lint + docs:check + build + test + pack dry-run +
+  `npm publish --provenance`); E2E suite extended with real interception (`enable →
+  capture → disable`) and HAR recording/export against a local HTTP server.
 
 ## [1.4.0] - 2026-08-19
 

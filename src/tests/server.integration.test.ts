@@ -63,17 +63,24 @@ describe('MCP server integration', () => {
     expect(getHtml?.title).toBe('Get HTML');
   });
 
-  it('declares an outputSchema for the tools that opted in (get_html, screenshot, manage_tabs)', async () => {
+  it('declares an outputSchema for opted-in tools and the shared-schema set', async () => {
     const { tools } = await client.listTools();
+    // Per-tool declared schemas.
     for (const name of ['get_html', 'screenshot', 'manage_tabs']) {
+      const tool = tools.find((t) => t.name === name);
+      expect(tool?.outputSchema, `${name} should declare an outputSchema`).toBeDefined();
+      expect(tool?.outputSchema?.properties).toHaveProperty('success');
+    }
+    // Shared-schema (src/schemas.ts) tools — high-traffic handlers.
+    for (const name of ['browser_action', 'get_cookies', 'perform_interaction', 'download_file']) {
       const tool = tools.find((t) => t.name === name);
       expect(tool?.outputSchema, `${name} should declare an outputSchema`).toBeDefined();
       expect(tool?.outputSchema?.properties).toHaveProperty('success');
     }
     // Spot check a tool that deliberately did NOT get one, to make sure this
     // isn't just always-on behavior from the SDK.
-    const browserAction = tools.find((t) => t.name === 'browser_action');
-    expect(browserAction?.outputSchema).toBeUndefined();
+    const indexedDb = tools.find((t) => t.name === 'get_indexed_db');
+    expect(indexedDb?.outputSchema).toBeUndefined();
   });
 
   it('lists no chrome://tab resources when no browser is attached, without throwing', async () => {

@@ -12,7 +12,10 @@ export function createInteractionTools(connector: ChromeConnector) {
     // Consolidated Interaction Tool
     {
       name: 'perform_interaction',
-      description: 'Interact with page elements: click, type into inputs, select dropdown options, scroll, or wait for selector. Use get_html first to verify selectors.',
+      description:
+        'Interact with page elements: click, type into inputs, select dropdown options, scroll, or wait for ' +
+        'selector. Clicks/types use TRUSTED CDP input events by default (works on React/SPA where synthetic ' +
+        'JS clicks are ignored); mode="synthetic" forces legacy JS events. Use get_html first to verify selectors.',
       inputSchema: z.object({
         action: z.enum(['click', 'type', 'select', 'scroll', 'wait']).describe('Action to perform'),
         selector: z.string().describe('CSS selector (Required for click, type, select, wait. Optional for scroll)'),
@@ -20,13 +23,14 @@ export function createInteractionTools(connector: ChromeConnector) {
         value: z.string().optional().describe('Value to select (Required for action="select")'),
         coordinateX: z.number().default(0).describe('X coordinate for scroll'),
         coordinateY: z.number().default(0).describe('Y coordinate for scroll'),
+        mode: z.enum(['auto', 'trusted', 'synthetic']).default('auto').describe('auto: trusted CDP input with synthetic fallback; trusted: CDP input only; synthetic: legacy JS events'),
         tabId: z.string().optional().describe('Tab ID (optional)'),
         timeoutMs: z.number().default(30000).describe('Timeout in milliseconds')
       }),
-      handler: async ({ action, selector, text, value, coordinateX, coordinateY, tabId, timeoutMs = 30000 }: any) => {
+      handler: async ({ action, selector, text, value, coordinateX, coordinateY, mode = 'auto', tabId, timeoutMs = 30000 }: any) => {
         await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
-        const { Runtime, DOM } = client;
+        const { Runtime, DOM, Input } = client;
 
         await Runtime.enable();
         await DOM.enable();
@@ -48,8 +52,48 @@ export function createInteractionTools(connector: ChromeConnector) {
           }, timeoutMs);
           if (!found) throw new Error(`Selector not found: ${selector}`);
 
-          await humanDelay(100, 300);
+          await humanDelay(80, 200);
 
+          // Trusted path: real CDP mouse events at the element's center.
+          // Sites that ignore synthetic el.click() (React 17+, pointer-events
+          // guards, overlays) still receive these. Falls back to synthetic.
+          let trustedClicked = false;
+          if (mode !== 'synthetic') {
+            try {
+              const box: any = await withTimeout(Runtime.evaluate({
+                expression: `(() => {
+                    const el = document.querySelector(${selectorLiteral});
+                    if (!el) return null;
+                    el.scrollIntoView({ block: 'center', inline: 'center' });
+                    const r = el.getBoundingClientRect();
+                    const cs = getComputedStyle(el);
+                    const visible = r.width > 1 && r.height > 1 && cs.visibility !== 'hidden' && cs.display !== 'none';
+                    return { x: r.x, y: r.y, w: r.width, h: r.height, visible };
+                })()`,
+                returnByValue: true
+              }), timeoutMs, 'Click bounding-box query timed out');
+
+              const info = box.result?.value;
+              if (info?.visible) {
+                const x = Math.round(info.x + info.w / 2);
+                const y = Math.round(info.y + info.h / 2);
+                await Input.dispatchMouseEvent({ type: 'mouseMoved', x, y });
+                await Input.dispatchMouseEvent({ type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+                await Input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+                trustedClicked = true;
+              }
+            } catch (e) {
+              console.error('[perform_interaction] trusted click failed, falling back to synthetic:', (e as Error).message);
+            }
+          }
+
+          if (trustedClicked) {
+            await humanDelay();
+            return { success: true, message: `Clicked ${selector} (trusted input)` };
+          }
+
+          // Synthetic fallback (mode="synthetic", invisible/overlaid elements,
+          // or when the trusted path errored).
           const result: any = await withTimeout(Runtime.evaluate({
             expression: `
                     (function() {
@@ -75,29 +119,67 @@ export function createInteractionTools(connector: ChromeConnector) {
           if (!selector) throw new Error('Selector required for type');
           if (text === undefined) throw new Error('Text required for type');
 
-          const script = `
+          const selectorLiteral = JSON.stringify(selector);
+
+          // Focus + select existing content so trusted insertText replaces it.
+          const focusResult: any = await Runtime.evaluate({
+            expression: `(() => {
+              const el = document.querySelector(${selectorLiteral});
+              if (!el) return { ok: false };
+              el.scrollIntoView({ block: 'center', inline: 'center' });
+              el.focus();
+              const tag = el.tagName.toLowerCase();
+              if (tag === 'input' || tag === 'textarea') {
+                el.select();
+              } else {
+                const sel = window.getSelection();
+                if (sel) { sel.removeAllRanges(); const range = document.createRange(); range.selectNodeContents(el); sel.addRange(range); }
+              }
+              return { ok: true };
+            })()`,
+            returnByValue: true,
+          });
+          if (!focusResult.result?.value?.ok) throw new Error(`Selector not found: ${selector}`);
+
+          // Trusted path: Input.insertText on the focused element (real key
+          // events semantics, works with React/Vue controlled inputs).
+          let typedTrusted = false;
+          if (mode !== 'synthetic') {
+            try {
+              await withTimeout(client.Input.insertText({ text }), timeoutMs, 'Type (insertText) timed out');
+              typedTrusted = true;
+            } catch (e) {
+              console.error('[perform_interaction] trusted insertText failed, falling back to synthetic:', (e as Error).message);
+            }
+          }
+
+          if (!typedTrusted) {
+            // Synthetic per-char fallback with bubbled input events.
+            const script = `
                 (async function() {
-                    const el = document.querySelector(${JSON.stringify(selector)});
+                    const el = document.querySelector(${selectorLiteral});
                     if (!el) throw new Error('Element not found');
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     el.focus();
                     el.value = "";
                     const text = ${JSON.stringify(text)};
                     for (let char of text) {
                         el.value += char;
                         el.dispatchEvent(new Event('input', { bubbles: true }));
-                        await new Promise(r => setTimeout(r, Math.random() * 50 + 30));
+                        await new Promise(r => setTimeout(r, Math.random() * 30 + 15));
                     }
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
                     return true;
                 })()
             `;
+            const result: any = await withTimeout(Runtime.evaluate({ expression: script, awaitPromise: true }), timeoutMs, 'Type action timed out');
+            if (result.exceptionDetails) throw new Error(`Type failed: ${result.exceptionDetails.exception?.description}`);
+          }
 
-          const result: any = await withTimeout(Runtime.evaluate({ expression: script, awaitPromise: true }), timeoutMs, 'Type action timed out');
-          if (result.exceptionDetails) throw new Error(`Type failed: ${result.exceptionDetails.exception?.description}`);
-
+          // Unify with a bubbling change event so form listeners fire either way.
+          await Runtime.evaluate({
+            expression: `(() => { const el = document.querySelector(${selectorLiteral}); if (el) el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
+          });
           await humanDelay();
-          return { success: true, message: `Typed "${text}" into ${selector}` };
+          return { success: true, message: `Typed "${text}" into ${selector}${typedTrusted ? ' (trusted input)' : ''}` };
         }
 
         // 3. SELECT

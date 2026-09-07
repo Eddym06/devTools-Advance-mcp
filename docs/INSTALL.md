@@ -113,6 +113,8 @@ real MCP protocol against it.
 - HAR exports and downloads are sandboxed to your working directory / temp
   folder.
 - The CDP debug port binds to localhost with an origin allow-list.
+- Optional: `CHROME_MCP_CONFIRM=on` requires an explicit `_confirm:true`
+  argument for destructive tools; `MCP_LOG_LEVEL` controls protocol log noise.
 
 See [USAGE_GUIDE.md](USAGE_GUIDE.md) for the full workflow documentation and
 [TOOLS.md](TOOLS.md) for the complete tool reference.

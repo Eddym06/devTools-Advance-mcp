@@ -228,37 +228,26 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Unregister service worker
     {
       name: 'unregister_service_worker',
-      description: 'Remove a Service Worker registration permanently by scopeURL.',
+      description:
+        'Permanently remove a Service Worker registration by scopeURL (PERMANENT — the site will re-register it ' +
+        'on its next visit). Uses the CDP ServiceWorker domain, so it works for ANY scope, not just the current tab origin.',
       inputSchema: z.object({
         scopeURL: z.string().describe('Scope URL of the service worker to unregister'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ scopeURL, tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
-        const { Runtime } = client;
-        
-        await Runtime.enable();
-        
-        const result = await Runtime.evaluate({
-          expression: `
-            (async () => {
-              const registrations = await navigator.serviceWorker.getRegistrations();
-              const reg = registrations.find(r => r.scope === ${JSON.stringify(scopeURL)});
-              if (reg) {
-                const unregistered = await reg.unregister();
-                return { success: unregistered };
-              }
-              return { success: false, error: 'Not found' };
-            })()
-          `,
-          awaitPromise: true,
-          returnByValue: true
-        });
-        
+        const client = await connector.getPersistentClient(tabId);
+        const { ServiceWorker } = client;
+
+        await ServiceWorker.enable();
+        const result: any = await ServiceWorker.unregister({ scopeURL });
+
         return {
-          success: result.result.value.success,
-          message: `Service worker unregister ${result.result.value.success ? 'successful' : 'failed'}: ${scopeURL}`
+          success: true,
+          message: `Service worker unregistered (permanent): ${scopeURL}`,
+          scopeURL,
+          ...(result?.error ? { serverError: result.error } : {}),
         };
       }
     },
@@ -266,37 +255,24 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Update service worker
     {
       name: 'update_service_worker',
-      description: 'Force a Service Worker to check for updates immediately.',
+      description:
+        'Force a Service Worker to check for updates immediately (CDP ServiceWorker domain — works for any scope).',
       inputSchema: z.object({
         scopeURL: z.string().describe('Scope URL of the service worker to update'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ scopeURL, tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
-        const { Runtime } = client;
-        
-        await Runtime.enable();
-        
-        const result = await Runtime.evaluate({
-          expression: `
-            (async () => {
-              const registrations = await navigator.serviceWorker.getRegistrations();
-              const reg = registrations.find(r => r.scope === ${JSON.stringify(scopeURL)});
-              if (reg) {
-                await reg.update();
-                return { success: true };
-              }
-              return { success: false, error: 'Not found' };
-            })()
-          `,
-          awaitPromise: true,
-          returnByValue: true
-        });
-        
+        const client = await connector.getPersistentClient(tabId);
+        const { ServiceWorker } = client;
+
+        await ServiceWorker.enable();
+        await ServiceWorker.updateRegistration({ scopeURL });
+
         return {
-          success: result.result.value.success,
-          message: `Service worker update triggered: ${scopeURL}`
+          success: true,
+          message: `Service worker update check triggered: ${scopeURL}`,
+          scopeURL
         };
       }
     },
