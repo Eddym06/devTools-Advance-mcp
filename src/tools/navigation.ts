@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
-import { isValidUrl, humanDelay, withTimeout } from '../utils/helpers.js';
+import { assertSafeWebUrl, humanDelay, withTimeout } from '../utils/helpers.js';
 
 export function createNavigationTools(connector: ChromeConnector) {
   return [
@@ -28,7 +28,9 @@ export function createNavigationTools(connector: ChromeConnector) {
 
         if (action === 'navigate') {
           if (!url) throw new Error('URL is required for "navigate" action');
-          const targetUrl = url; // TS check
+          // Only http(s) may be navigated to — blocks file:// local reads and
+          // other schemes a hostile prompt/page could abuse.
+          const targetUrl = assertSafeWebUrl(url);
           console.error(`[Browser Action] Navigating to ${targetUrl}`);
 
           // Wait Logic (Duplicated for robustness)
@@ -105,8 +107,10 @@ export function createNavigationTools(connector: ChromeConnector) {
         }
 
         if (action === 'reload') {
+          // Subscribe to the one-shot load event BEFORE reloading.
+          const loadPromise = Page.loadEventFired();
           await Page.reload({ ignoreCache: false });
-          await withTimeout(Page.loadEventFired(), timeout, 'Reload timed out');
+          await withTimeout(loadPromise, timeout, 'Reload timed out');
           return { success: true, message: 'Page reloaded' };
         }
 
@@ -144,6 +148,7 @@ export function createNavigationTools(connector: ChromeConnector) {
         }
 
         if (action === 'create') {
+          if (url) assertSafeWebUrl(url, 'url');
           const newTab = await connector.createTab(url);
           await humanDelay();
           return { success: true, tab: { id: newTab.id, url: newTab.url }, message: `Created tab` };

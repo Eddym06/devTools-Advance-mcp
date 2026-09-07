@@ -3,6 +3,10 @@
   "version": "1.4.0",
   "description": "Cross-platform Chrome MCP with real-time request interception, response modification, network capture, HAR recording/replay, accessibility testing, anti-detection, console log capture, performance audits, and 90+ tools plus MCP resources and prompts. Includes smart workflows for common tasks. Works on Windows, Mac, and Linux.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "chrome-devtools-advanced-mcp": "dist/index.js"
   },
@@ -12,13 +16,16 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
     "dev": "tsc --watch",
     "prepare": "npm run build",
     "start": "node dist/index.js",
     "lint": "eslint src",
     "format": "prettier --write \"src/**/*.ts\"",
-    "test": "vitest run"
+    "test": "vitest run",
+    "docs:check": "node scripts/validate-docs.mjs",
+    "pack:check": "npm run build && npm pack --dry-run"
   },
   "keywords": [
     "mcp",

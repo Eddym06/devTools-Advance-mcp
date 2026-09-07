@@ -13,6 +13,29 @@ const requestHistory = new Map<string, any[]>();
 // Store interception state (per tab)
 const interceptionState = new Map<string, { autoContinue: boolean; pauseMode: string; pausedCount: number }>();
 
+// Owning CDP session per tab key + the requestPaused unsubscribe handle.
+// Enable/disable/modify MUST all run on the SAME CDP session: the Fetch
+// domain enable-state is session-scoped, so calling Fetch.disable() from a
+// different session is a silent no-op that leaves the page frozen on the
+// next matching request.
+const interceptionSessions = new Map<string, { client: any; unsubscribe: () => void }>();
+
+/**
+ * Detach every interception session and clear all capture state.
+ * Invoked on browser disconnect/relaunch so a fresh Chrome session never
+ * inherits stale buffers, paused requests or event listeners.
+ */
+export function resetNetworkAccessibilityState(): void {
+  for (const entry of interceptionSessions.values()) {
+    try { entry.unsubscribe(); } catch { /* ignore */ }
+    try { entry.client.Fetch?.disable(); } catch { /* ignore */ }
+  }
+  interceptionSessions.clear();
+  interceptedRequests.clear();
+  requestHistory.clear();
+  interceptionState.clear();
+}
+
 
 export function createNetworkAccessibilityTools(connector: ChromeConnector) {
   return [
@@ -35,7 +58,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
             success: true,
             interceptedRequests: [],
             count: 0,
-            message: 'No requests currently intercepted or in history. Use enable_network_interception first.'
+            message: 'No requests currently intercepted or in history. Use start_capturing_network_requests first.'
           };
         }
         
@@ -85,12 +108,27 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ patterns = ['*'], autoContinue = true, pauseMode = 'firstOnly', maxPaused = 1, tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        // Interception must be owned by ONE persistent CDP session per tab —
+        // Fetch domain enable-state is session-scoped, so disabling from a
+        // different session is a silent no-op (and can freeze the page).
+        const client = await connector.getPersistentClient(tabId);
         const { Network, Fetch } = client;
-        
+
+        // Initialize storage for this tab
+        const effectiveTabId = tabId || 'default';
+
+        // Tear down any previous interception for this tab FIRST: listeners
+        // never stack across re-enables and the pattern set gets replaced.
+        const prevSession = interceptionSessions.get(effectiveTabId);
+        if (prevSession) {
+          try { prevSession.unsubscribe(); } catch { /* ignore */ }
+          try { await Fetch.disable(); } catch { /* ignore */ }
+          interceptionSessions.delete(effectiveTabId);
+        }
+
         // Enable Network domain
         await Network.enable();
-        
+
         // Enable Fetch domain for interception
         await Fetch.enable({
           patterns: patterns.map((pattern: string) => ({
@@ -98,13 +136,11 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
             requestStage: 'Request'
           }))
         });
-        
-        // Initialize storage for this tab
-        const effectiveTabId = tabId || 'default';
+
         if (!interceptedRequests.has(effectiveTabId)) {
           interceptedRequests.set(effectiveTabId, new Map());
         }
-        
+
         // Initialize interception state
         interceptionState.set(effectiveTabId, {
           autoContinue,
@@ -112,59 +148,71 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
           pausedCount: 0
         });
         
-        // Listen for intercepted requests
-        Fetch.requestPaused(async (params: any) => {
-          const requests = interceptedRequests.get(effectiveTabId)!;
-          const state = interceptionState.get(effectiveTabId)!;
-          requests.set(params.requestId, params);
-          
-          // Determine if we should auto-continue this request
-          let shouldAutoContinue = state.autoContinue;
-          
-          // Handle special pause modes when autoContinue is false
-          if (!state.autoContinue && state.pauseMode !== 'persistent') {
-            if (state.pauseMode === 'firstOnly') {
-              // After first pause, switch to auto-continue
-              if (state.pausedCount > 0) {
-                shouldAutoContinue = true;
-              } else {
-                state.pausedCount++;
-              }
-            } else if (state.pauseMode === 'limitedPause') {
-              // Pause up to maxPaused requests
-              if (state.pausedCount >= maxPaused) {
-                shouldAutoContinue = true;
-              } else {
-                state.pausedCount++;
+        // Listen for intercepted requests (single owner listener per tab; the
+        // returned unsubscribe is stored so stop_capturing can detach it).
+        const unsubscribe = Fetch.requestPaused(async (params: any) => {
+          try {
+            const requests = interceptedRequests.get(effectiveTabId);
+            const state = interceptionState.get(effectiveTabId);
+
+            // Capture stopped while Fetch is still enabled (safety net):
+            // never leave a request paused without an owner.
+            if (!requests || !state) {
+              await Fetch.continueRequest({ requestId: params.requestId }).catch(() => {});
+              return;
+            }
+
+            requests.set(params.requestId, params);
+
+            // Determine if we should auto-continue this request
+            let shouldAutoContinue = state.autoContinue;
+
+            // Handle special pause modes when autoContinue is false
+            if (!state.autoContinue && state.pauseMode !== 'persistent') {
+              if (state.pauseMode === 'firstOnly') {
+                // After first pause, switch to auto-continue
+                if (state.pausedCount > 0) {
+                  shouldAutoContinue = true;
+                } else {
+                  state.pausedCount++;
+                }
+              } else if (state.pauseMode === 'limitedPause') {
+                // Pause up to maxPaused requests
+                if (state.pausedCount >= maxPaused) {
+                  shouldAutoContinue = true;
+                } else {
+                  state.pausedCount++;
+                }
               }
             }
-          }
-          
-          // Auto-continue if enabled or triggered by pause mode
-          if (shouldAutoContinue) {
-            try {
+
+            // Auto-continue if enabled or triggered by pause mode
+            if (shouldAutoContinue) {
               // Store in history
               if (!requestHistory.has(effectiveTabId)) {
                 requestHistory.set(effectiveTabId, []);
               }
               const history = requestHistory.get(effectiveTabId)!;
-              
+
               history.unshift({
                 ...params,
                 status: state.autoContinue ? 'auto-continued' : 'auto-continued-after-pause-limit',
                 timestamp: Date.now()
               });
-              
+
               // Keep last 100 requests
               if (history.length > 100) history.pop();
-              
+
               await Fetch.continueRequest({ requestId: params.requestId });
               requests.delete(params.requestId);
-            } catch (e) {
-              console.error(`[Auto-continue] Failed for ${params.request.url}:`, e);
             }
+          } catch (e) {
+            console.error(`[Auto-continue] Failed for ${params.request?.url}:`, e);
+            // Never leave a request paused because our bookkeeping threw.
+            await Fetch.continueRequest({ requestId: params.requestId }).catch(() => {});
           }
         });
+        interceptionSessions.set(effectiveTabId, { client, unsubscribe });
         
         const warningMessage = !autoContinue && pauseMode === 'persistent' 
           ? '🚨 DANGER: persistent pause mode active! You MUST manually continue/modify/fail EVERY request or browser will FREEZE! Switch to pauseMode="firstOnly" for safety.' 
@@ -173,7 +221,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
           : !autoContinue && pauseMode === 'limitedPause'
           ? `✅ SAFE MODE ACTIVE: Only the first ${maxPaused} request(s) will pause. All subsequent requests auto-continue (no freeze risk).`
           : autoContinue
-          ? '✅ MONITORING MODE: All requests logged to history and auto-continued (no freeze risk). Use list_intercepted_requests to view history.'
+          ? '✅ MONITORING MODE: All requests logged to history and auto-continued (no freeze risk). Use show_captured_network_traffic to view history.'
           : undefined;
         
         return {
@@ -184,7 +232,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
           maxPaused: pauseMode === 'limitedPause' ? maxPaused : undefined,
           warning: warningMessage,
           interceptedCount: 0,
-          nextStep: '⚠️ NEXT: Call list_intercepted_requests to see captured traffic (DO NOT use execute_script or Performance API)'
+          nextStep: '⚠️ NEXT: Call show_captured_network_traffic to see captured traffic (DO NOT use execute_script or Performance API)'
         };
       }
     },
@@ -203,7 +251,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ requestId, modifiedUrl, modifiedMethod, modifiedHeaders, modifiedPostData, tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Fetch } = client;
         
         const effectiveTabId = tabId || 'default';
@@ -267,7 +315,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ requestId, errorReason = 'Failed', tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Fetch } = client;
         
         const effectiveTabId = tabId || 'default';
@@ -305,7 +353,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ requestId, tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Fetch } = client;
         
         const effectiveTabId = tabId || 'default';
@@ -343,7 +391,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ requestId, tabId, customMethod, customHeaders, customBody }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Runtime } = client;
         
         await Runtime.enable();
@@ -396,8 +444,8 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
         const script = `
         (async function() {
             try {
-                const response = await fetch("${request.url}", {
-                    method: "${finalMethod}",
+                const response = await fetch(${JSON.stringify(request.url)}, {
+                    method: ${JSON.stringify(finalMethod)},
                     headers: ${JSON.stringify(safeHeaders)},
                     body: ${finalBody ? JSON.stringify(finalBody) : 'undefined'},
                     credentials: 'include', 
@@ -465,17 +513,29 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
-        const { Fetch } = client;
-        
-        // Disable Fetch domain
-        await Fetch.disable();
-        
-        // Clear intercepted requests for this tab
         const effectiveTabId = tabId || 'default';
+
+        // Disable Fetch on the SAME session that enabled it. Fetch domain
+        // enable-state is session-scoped: disabling from a fresh session
+        // leaves the interceptor running and can freeze the page.
+        const session = interceptionSessions.get(effectiveTabId);
+        if (session) {
+          try { session.unsubscribe(); } catch { /* ignore */ }
+          try { await session.client.Fetch.disable(); } catch (e) { console.error('[stop_capturing] Fetch.disable error:', (e as Error).message); }
+          interceptionSessions.delete(effectiveTabId);
+        } else {
+          // Best-effort fallback for state created before this fix.
+          try {
+            const client = await connector.getPersistentClient(tabId);
+            await client.Fetch.disable();
+          } catch { /* no active interception */ }
+        }
+
+        // Clear intercepted requests for this tab (history is intentionally
+        // kept so show_captured_network_traffic still works after stopping).
         interceptedRequests.delete(effectiveTabId);
         interceptionState.delete(effectiveTabId);
-        
+
         return {
           success: true,
           message: 'Network interception disabled'
@@ -494,7 +554,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ tabId, depth = -1, includeIgnored = false }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Accessibility } = client;
         
         // Get the full accessibility tree
@@ -572,7 +632,7 @@ export function createNetworkAccessibilityTools(connector: ChromeConnector) {
       }),
       handler: async ({ tabId, interestingOnly = true }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Accessibility } = client;
         
         // Get the accessibility snapshot

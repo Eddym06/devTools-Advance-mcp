@@ -11,6 +11,10 @@ import { buildToolRegistry, findDuplicateToolNames, type ToolDefinition } from '
 import { deriveAnnotations } from './tool-annotations.js';
 import { registerResources } from './resources.js';
 import { registerPrompts } from './prompts.js';
+import { withTimeout } from './utils/helpers.js';
+
+// Backstop so a hung CDP call can never leave an MCP request pending forever.
+const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 
 export interface PackageInfo {
   name: string;
@@ -47,7 +51,11 @@ export function createServer(connector: ChromeConnector, pkg: PackageInfo): McpS
       },
       async (toolArgs: any) => {
         try {
-          const result = await tool.handler(toolArgs);
+          const result = await withTimeout(
+            tool.handler(toolArgs),
+            DEFAULT_TOOL_TIMEOUT_MS,
+            `Tool "${tool.name}" timed out after ${DEFAULT_TOOL_TIMEOUT_MS / 1000}s`
+          );
 
           // Pass through structured content whenever the handler returned a
           // plain object, so clients that understand it can skip re-parsing

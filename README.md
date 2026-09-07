@@ -106,7 +106,7 @@ Tools are split into two tiers so the default list stays manageable for the AI: 
 | `capture_network_on_action` | Record traffic while performing an action. |
 | `resend_network_request` | Replay captured API calls. |
 | `start_har_recording` | Save full network logs (HAR format). |
-| `monitor_websocket_messages` | Listen to socket traffic. |
+| `list_websocket_messages` | Listen to socket traffic. |
 | `emulate_network_conditions` | Throttle to Slow 3G/4G/offline to test resilience. |
 | `run_performance_audit` | Core Web Vitals (LCP, CLS) + basic timing via PerformanceObserver. |
 
@@ -146,6 +146,22 @@ This is a VS Code security feature.
 1. Reload VS Code (`Ctrl+R`).
 2. When the AI tries to use a tool again, click **"Always Allow"** on the popup.
 
+**Why are cookie values redacted / `file://` blocked?**
+Security defaults (see `docs/USAGE_GUIDE.md` → *Security defaults*): navigation
+is limited to `http(s)`, cookie values require `includeValues:true`, and HAR
+exports/downloads are sandboxed to your working dir or temp folder.
+
+---
+
+## 📚 Documentation
+
+*   **[docs/USAGE_GUIDE.md](docs/USAGE_GUIDE.md)** — practical workflows for
+    the AI on the current (v1.4) tool vocabulary.
+*   **[docs/TOOLS.md](docs/TOOLS.md)** — complete, machine-checked reference of
+    all 90 tools.
+*   **[docs/INSTALL.md](docs/INSTALL.md)** — installation & configuration.
+*   **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — release notes.
+
 ---
 
 ## 👨‍💻 For Developers
@@ -154,7 +170,7 @@ To contribute or run locally:
 
 ```bash
 git clone https://github.com/Eddym06/chrome-devTools-advanced-mcp.git
-cd custom-chrome-mcp
+cd chrome-devTools-advanced-mcp
 npm install
 npm run build
 npm start
@@ -163,12 +179,15 @@ npm start
 Before opening a PR:
 
 ```bash
-npm run lint   # ESLint (flat config)
-npm run build  # tsc type-check
-npm test       # vitest — includes an in-memory MCP client/server integration test
+npm run lint        # ESLint (flat config)
+npm run build       # clean tsc build
+npm test            # vitest — includes an in-memory MCP client/server integration test
+npm run docs:check  # fails if any guide references a non-existent tool
+# optional, on a machine with Chrome installed:
+CHROME_MCP_E2E=1 npm test   # real-Chrome end-to-end suite
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same three steps on Node 20 and 22 for every push/PR.
+CI (`.github/workflows/ci.yml`) runs lint + build + test on Node 20 and 22 for every push/PR.
 
 ---
 *Developed with ❤️ by @eddym06*

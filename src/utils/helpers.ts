@@ -2,6 +2,64 @@
  * Utility functions for Custom Chrome MCP
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Reads the package version from package.json at runtime.
+ * Works both from `src/` (dev) and from `dist/` (published tarball, where
+ * package.json sits two levels up next to dist/).
+ */
+export function getPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const WEB_PROTOCOLS = new Set(['http:', 'https:']);
+// Internal chrome pages the server itself uses; navigation to anything else
+// non-web is refused.
+const INTERNAL_PAGES = new Set(['about:blank', 'chrome://newtab/']);
+
+/**
+ * Validates a URL before the browser is asked to navigate to it.
+ *
+ * Why: CDP navigation accepts `file://…`, which combined with get_html /
+ * execute_script / the tab-html resource becomes an arbitrary local-file read
+ * primitive. A malicious webpage or prompt-injected instruction could steer a
+ * naive agent into it. Only http(s) is allowed by default; `file://` can be
+ * re-enabled explicitly with CHROME_MCP_ALLOW_FILE_URLS=1 for local testing.
+ *
+ * @returns the normalized URL string.
+ */
+export function assertSafeWebUrl(raw: string, label = 'url'): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`Invalid ${label}: "${raw}" is not a valid URL`);
+  }
+
+  if (WEB_PROTOCOLS.has(parsed.protocol)) return parsed.toString();
+
+  if (parsed.protocol === 'file:' && process.env.CHROME_MCP_ALLOW_FILE_URLS === '1') {
+    return parsed.toString();
+  }
+
+  if (INTERNAL_PAGES.has(parsed.toString())) return parsed.toString();
+
+  throw new Error(
+    `Blocked ${label}: "${raw}" — only http(s) URLs can be navigated to. ` +
+    `(file:// requires CHROME_MCP_ALLOW_FILE_URLS=1; other schemes are not supported.)`
+  );
+}
+
 /**
  * Add random human-like delay
  */
@@ -170,4 +228,39 @@ export function extractDomain(url: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Navigate a CDP page client to `url` and wait for the page's `load` event.
+ *
+ * CRITICAL: the load-event promise must be created BEFORE Page.navigate is
+ * sent — the event is one-shot, so awaiting it *after* navigation hangs
+ * forever on fast/local pages (the event already fired). Several handlers in
+ * this codebase previously did exactly that; use this helper everywhere a
+ * tool navigates. URL is validated via assertSafeWebUrl.
+ *
+ * @returns the normalized (validated) URL that was navigated to.
+ */
+export async function navigateAndWaitForLoad(
+  client: any,
+  url: string,
+  timeoutMs: number = 30000,
+  waitUntil: 'load' | 'domcontentloaded' = 'load'
+): Promise<string> {
+  const safeUrl = assertSafeWebUrl(url);
+  const { Page, Network } = client;
+
+  await Page.enable();
+  // Subscribe to the one-shot event BEFORE triggering navigation.
+  const loadPromise = waitUntil === 'domcontentloaded' ? Page.domContentEventFired() : Page.loadEventFired();
+  await Network.enable().catch(() => { /* Network is optional for navigation */ });
+
+  const navResponse = await Page.navigate({ url: safeUrl });
+  if (navResponse?.errorText) {
+    throw new Error(`Navigation failed: ${navResponse.errorText}`);
+  }
+
+  await withTimeout(loadPromise, timeoutMs, `Timeout waiting for '${waitUntil}' after navigating to ${safeUrl}`);
+  await humanDelay();
+  return safeUrl;
 }

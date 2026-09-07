@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
 import { saveBase64ToFile } from '../utils/file-storage.js';
-import { humanDelay } from '../utils/helpers.js';
+import { assertSafeWebUrl, humanDelay, navigateAndWaitForLoad } from '../utils/helpers.js';
 
 export function createSmartWorkflowTools(connector: ChromeConnector) {
   return [
@@ -72,8 +72,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
               userGesture: true
             });
           } else if (navigateUrl) {
-            await Page.navigate({ url: navigateUrl });
-            await Page.loadEventFired();
+            await navigateAndWaitForLoad(client, navigateUrl, 30000);
           }
 
           // Wait for network
@@ -222,8 +221,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
 
             case 'navigate':
               if (!action.url) throw new Error('url required for navigate action');
-              await Page.navigate({ url: action.url });
-              await Page.loadEventFired();
+              await navigateAndWaitForLoad(client, action.url, 30000);
               break;
 
             case 'wait':
@@ -304,7 +302,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
 
             case 'navigate':
               if (!url) throw new Error('url is required for navigate action');
-              await client.Page.navigate({ url });
+              await navigateAndWaitForLoad(client, url, 30000);
               break;
 
             case 'type':
@@ -378,10 +376,9 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
           const client = await connector.getTabClient(tabId);
           const { Page, Runtime } = client;
 
-          // Step 1: Navigate
+          // Step 1: Navigate (validated URL; load event subscribed first)
           await Page.enable();
-          await Page.navigate({ url });
-          await Page.loadEventFired();
+          await navigateAndWaitForLoad(client, url, timeout || 30000);
 
           // Step 2: Wait for selector if provided
           if (waitForSelector) {
@@ -462,6 +459,12 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
 
           await Runtime.enable();
 
+          const parsedUrl = new URL(url);
+          if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+            throw new Error('test_api_endpoint only supports http(s) URLs');
+          }
+          const safeUrl = parsedUrl.toString();
+
           // Parse headers if it's a JSON string
           let headersObj = {};
           if (headers) {
@@ -478,8 +481,8 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
           const fetchScript = `
             (async function() {
               try {
-                const response = await fetch("${url}", {
-                  method: "${method}",
+                const response = await fetch(${JSON.stringify(safeUrl)}, {
+                  method: ${JSON.stringify(method)},
                   headers: ${JSON.stringify(headersObj)},
                   body: ${body ? JSON.stringify(body) : 'undefined'},
                   credentials: ${includeCredentials ? '"include"' : '"omit"'},
@@ -605,8 +608,8 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
                   break;
 
                 case 'navigate':
-                  await Page.navigate({ url: step.url || '' });
-                  await Page.loadEventFired();
+                  if (!step.url) throw new Error('navigate step requires url');
+                  await navigateAndWaitForLoad(client, step.url, 30000);
                   stepResult.success = true;
                   stepResult.url = step.url;
                   break;
@@ -713,9 +716,8 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
             } catch { /* body may not be available */ }
           });
 
-          // Navigate
-          await Page.navigate({ url });
-          await Page.loadEventFired();
+          // Navigate (validated URL; load event subscribed before navigation)
+          await navigateAndWaitForLoad(client, url, timeout || 30000);
 
           // Wait for selector if provided
           if (waitForSelector) {
@@ -778,9 +780,10 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
         sessionData: z.string().optional().describe('Session JSON data (for load operation)'),
         includeLocalStorage: z.boolean().default(true).describe('Include localStorage'),
         includeSessionStorage: z.boolean().default(true).describe('Include sessionStorage'),
+        includeValues: z.boolean().default(false).describe('Include raw cookie values (default false — they are session credentials)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ operation, sessionName, sessionData, includeLocalStorage, includeSessionStorage, tabId }: any) => {
+      handler: async ({ operation, sessionName, sessionData, includeLocalStorage, includeSessionStorage, includeValues = false, tabId }: any) => {
         try {
           await connector.verifyConnection();
           const client = await connector.getTabClient(tabId);
@@ -794,6 +797,15 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
             case 'export':
               // Get cookies
               const cookies = await Network.getCookies({});
+
+              // Cookie VALUES are hidden by default (they are credentials);
+              // includeValues=true opts into a full, restorable dump.
+              const exportedCookies = includeValues
+                ? cookies.cookies
+                : cookies.cookies.map((c: any) => {
+                    const { value: _value, ...rest } = c;
+                    return { ...rest, value: '[redacted]' };
+                  });
 
               // Get storage
               let localStorage, sessionStorage;
@@ -815,7 +827,7 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
               const session = {
                 name: sessionName,
                 timestamp: Date.now(),
-                cookies: cookies.cookies,
+                cookies: exportedCookies,
                 localStorage,
                 sessionStorage
               };
@@ -826,7 +838,10 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
                 sessionName: sessionName,
                 sessionData: session,
                 cookieCount: cookies.cookies.length,
-                message: `Session ${operation === 'save' ? 'saved' : 'exported'} successfully`
+                valuesHidden: !includeValues,
+                message: includeValues
+                  ? `Session ${operation === 'save' ? 'saved' : 'exported'} successfully (includes cookie values)`
+                  : `Session ${operation === 'save' ? 'saved' : 'exported'} successfully — cookie VALUES hidden. Pass includeValues=true to produce a restorable backup.`
               };
 
             case 'load':
@@ -836,8 +851,19 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
 
               const loadedSession = typeof sessionData === 'string' ? JSON.parse(sessionData) : sessionData;
 
-              // Set cookies
-              for (const cookie of loadedSession.cookies || []) {
+              // Set cookies — only CDP-accepted fields, skipping redacted or
+              // valueless cookies (they cannot be restored).
+              const cookieFields = ['name', 'value', 'url', 'domain', 'path', 'secure', 'httpOnly', 'sameSite', 'expires', 'priority'] as const;
+              let skippedCookies = 0;
+              for (const raw of loadedSession.cookies || []) {
+                const cookie: any = {};
+                for (const field of cookieFields) {
+                  if (raw[field] !== undefined) cookie[field] = raw[field];
+                }
+                if (typeof cookie.value !== 'string' || cookie.value === '' || cookie.value === '[redacted]') {
+                  skippedCookies++;
+                  continue;
+                }
                 await Network.setCookie(cookie);
               }
 
@@ -863,8 +889,12 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
                 success: true,
                 operation: 'load',
                 sessionName: loadedSession.name,
-                cookiesRestored: (loadedSession.cookies || []).length,
-                message: 'Session loaded successfully'
+                cookiesRestored: (loadedSession.cookies || []).length - skippedCookies,
+                skippedCookies,
+                message:
+                  skippedCookies > 0
+                    ? `Session loaded successfully (${skippedCookies} cookie(s) skipped: no value — export again with includeValues=true for a restorable backup)`
+                    : 'Session loaded successfully'
               };
 
             case 'clear':
@@ -923,6 +953,8 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
       handler: async ({ url, cookies, extractContent }: any) => {
         await connector.verifyConnection();
 
+        const safeUrl = assertSafeWebUrl(url);
+
         const browser = connector.getBrowserContext()?.browser();
         if (!browser) {
           throw new Error(
@@ -941,14 +973,14 @@ export function createSmartWorkflowTools(connector: ChromeConnector) {
               cookies.map((c: any) => ({
                 name: c.name,
                 value: c.value,
-                domain: c.domain || new URL(url).hostname,
+                domain: c.domain || new URL(safeUrl).hostname,
                 path: c.path || '/',
               }))
             );
           }
 
           const page = await testContext.newPage();
-          await page.goto(url, { waitUntil: 'load' });
+          await page.goto(safeUrl, { waitUntil: 'load' });
 
           // String form (not a typed callback) since this project's tsconfig
           // has no "dom" lib — Playwright evaluates it as a page-side expression.

@@ -12,12 +12,15 @@ export function createSessionTools(connector: ChromeConnector) {
     // Get cookies
     {
       name: 'get_cookies',
-      description: 'Get browser cookies for the current page or a specific URL.',
+      description:
+        'Get browser cookies for the current page or a specific URL. Cookie VALUES are hidden by default ' +
+        '(they can be session tokens/credentials); pass includeValues=true only when you genuinely need them.',
       inputSchema: z.object({
         url: z.string().optional().describe('URL to get cookies for (optional, uses current page if not specified)'),
+        includeValues: z.boolean().default(false).describe('Include raw cookie values (default: false — redacted)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ url, tabId }: any) => {
+      handler: async ({ url, includeValues = false, tabId }: any) => {
         await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network } = client;
@@ -32,9 +35,10 @@ export function createSessionTools(connector: ChromeConnector) {
         return {
           success: true,
           count: cookies.length,
+          valuesHidden: !includeValues,
           cookies: cookies.map((c: any) => ({
             name: c.name,
-            value: c.value,
+            ...(includeValues ? { value: c.value } : { value: '[redacted]', redacted: true }),
             domain: c.domain,
             path: c.path,
             expires: c.expires,
@@ -278,11 +282,14 @@ export function createSessionTools(connector: ChromeConnector) {
     // Export session
     {
       name: 'export_session',
-      description: 'Export complete session state (cookies, localStorage, sessionStorage) as JSON for later import.',
+      description:
+        'Export complete session state (cookies, localStorage, sessionStorage) as JSON for later import. ' +
+        'Cookie VALUES are hidden by default — pass includeValues=true to produce a session that can be restored.',
       inputSchema: z.object({
+        includeValues: z.boolean().default(false).describe('Include raw cookie values (required for a restorable backup)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ tabId }: any) => {
+      handler: async ({ includeValues = false, tabId }: any) => {
         await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { Network, Runtime } = client;
@@ -308,7 +315,7 @@ export function createSessionTools(connector: ChromeConnector) {
         const sessionData: SessionData = {
           cookies: cookies.map((c: any) => ({
             name: c.name,
-            value: c.value,
+            ...(includeValues ? { value: c.value } : {}), // redacted: value omitted entirely
             domain: c.domain,
             path: c.path,
             expires: c.expires,
@@ -320,11 +327,15 @@ export function createSessionTools(connector: ChromeConnector) {
           sessionStorage: JSON.parse(sessionStorageResult.result.value || '{}'),
           timestamp: Date.now()
         };
-        
+
         return {
           success: true,
           session: sessionData,
-          message: 'Session exported successfully'
+          valuesHidden: !includeValues,
+          cookieCount: cookies.length,
+          message: includeValues
+            ? 'Session exported successfully (includes cookie values)'
+            : 'Session exported successfully — cookie values HIDDEN. Re-run with includeValues=true if you need to restore this session later.'
         };
       }
     },
@@ -347,8 +358,13 @@ export function createSessionTools(connector: ChromeConnector) {
         
         const session: SessionData = JSON.parse(sessionData);
         
-        // Import cookies
+        // Import cookies (skip redacted/valueless ones — they cannot be restored)
+        let skippedCookies = 0;
         for (const cookie of session.cookies) {
+          if (typeof cookie.value !== 'string' || cookie.value === '' || cookie.value === '[redacted]') {
+            skippedCookies++;
+            continue;
+          }
           await Network.setCookie(cookie as any);
         }
         
@@ -369,11 +385,15 @@ export function createSessionTools(connector: ChromeConnector) {
         return {
           success: true,
           imported: {
-            cookies: session.cookies.length,
+            cookies: session.cookies.length - skippedCookies,
             localStorage: Object.keys(session.localStorage).length,
             sessionStorage: Object.keys(session.sessionStorage).length
           },
-          message: 'Session imported successfully'
+          skippedCookies,
+          message:
+            skippedCookies > 0
+              ? `Session imported successfully (${skippedCookies} cookie(s) skipped: no value — export again with includeValues=true for a restorable backup)`
+              : 'Session imported successfully'
         };
       }
     },

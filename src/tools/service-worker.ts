@@ -3,49 +3,43 @@
  */
 
 import { z } from 'zod';
+import CDP from 'chrome-remote-interface';
 import type { ChromeConnector } from '../chrome-connector.js';
-import type { ServiceWorkerInfo } from '../types/index.js';
 
 export function createServiceWorkerTools(connector: ChromeConnector) {
   return [
     // List all service workers
     {
       name: 'list_service_workers',
-      description: 'List all registered Service Workers (extensions and PWAs) with their status and scope.',
+      description:
+        'List every Service Worker target currently visible to CDP (extension and web). ' +
+        'NOTE: navigator.serviceWorker.getRegistrations() in a page can only see that page\'s own origin, ' +
+        'so this lists actual CDP targets instead — every worker, cross-origin included.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
       handler: async ({ tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
-        const { Runtime } = client;
-        
-        await Runtime.enable();
-        
-        // Use JavaScript to query service workers
-        const result = await Runtime.evaluate({
-          expression: `
-            (async () => {
-              const registrations = await navigator.serviceWorker.getRegistrations();
-              return registrations.map(reg => ({
-                scope: reg.scope,
-                scriptURL: reg.active ? reg.active.scriptURL : null,
-                state: reg.active ? reg.active.state : 'none',
-                installing: reg.installing ? reg.installing.scriptURL : null,
-                waiting: reg.waiting ? reg.waiting.scriptURL : null
-              }));
-            })()
-          `,
-          awaitPromise: true,
-          returnByValue: true
-        });
-        
-        const workers = result.result.value || [];
-        
+        const targets: any[] = await CDP.List({ port: connector.getPort() });
+
+        const workers = targets
+          .filter((t: any) => t.type === 'service_worker')
+          .map((t: any) => ({
+            id: t.id,
+            url: t.url,
+            title: t.title || '',
+            description: t.description || '',
+            scopeURL: t.url, // CDP lists the SW script URL as its target URL
+          }));
+
         return {
           success: true,
           count: workers.length,
-          workers
+          workers,
+          note:
+            workers.length === 0
+              ? 'No service worker targets found. They must be running (or start them with start_service_worker).'
+              : 'Targets may be sleeping; use start_service_worker/inspect_service_worker to wake and debug a specific one.'
         };
       }
     },
@@ -56,10 +50,10 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
       description: 'Capture console logs from a Service Worker by targetId for debugging.',
       inputSchema: z.object({
         targetId: z.string().describe('The Target ID of the service worker (from list_tabs)'),
-        executeTestLogs: z.boolean().default(true).describe('Whether to execute test console.log statements to verify capture (default: true)'),
+        executeTestLogs: z.boolean().default(false).describe('Whether to inject test console.log statements to verify capture (default: false — do not pollute real logs)'),
         captureTimeMs: z.number().default(3000).describe('How long to listen for logs in milliseconds (default: 3000)')
       }),
-      handler: async ({ targetId, executeTestLogs = true, captureTimeMs = 3000 }: any) => {
+      handler: async ({ targetId, executeTestLogs = false, captureTimeMs = 3000 }: any) => {
         await connector.verifyConnection();
         // Connect directly to the specific target
         const client = await connector.getTabClient(targetId);
@@ -168,36 +162,66 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
     // Get service worker details
     {
       name: 'get_service_worker',
-      description: 'Get detailed info about a specific Service Worker by versionId (status, scope, script URL).',
+      description:
+        'Get info about a specific Service Worker registration. Accepts either the registration ID ' +
+        '(from the ServiceWorker domain — see below) or a service_worker target ID from list_service_workers.',
       inputSchema: z.object({
-        versionId: z.string().describe('Service worker version ID'),
+        registrationId: z.string().optional().describe('Service worker registration ID'),
+        targetId: z.string().optional().describe('service_worker target ID from list_service_workers / list_tabs'),
+        scopeURL: z.string().optional().describe('Scope URL to search registrations by (alternative lookup)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ versionId, tabId }: any) => {
+      handler: async ({ registrationId, targetId, scopeURL, tabId }: any) => {
         await connector.verifyConnection();
         const client = await connector.getTabClient(tabId);
         const { ServiceWorker } = client;
-        
+
         await ServiceWorker.enable();
-        
         const { registrations } = await ServiceWorker.getRegistrations();
-        const worker = registrations.find((r: any) => r.versionId === versionId);
-        
-        if (!worker) {
-          throw new Error(`Service worker not found: ${versionId}`);
+
+        // Look up by registration ID or scope URL.
+        const registration = (registrations as any[]).find(
+          (r: any) =>
+            (registrationId && r.registrationId === registrationId) ||
+            (scopeURL && r.scopeURL === scopeURL)
+        );
+
+        if (registration) {
+          return {
+            success: true,
+            worker: {
+              registrationId: registration.registrationId,
+              scopeURL: registration.scopeURL,
+              isDeleted: registration.isDeleted === true,
+            },
+            note:
+              'Registration-level info. Per-version status (running, activated, etc.) requires the ServiceWorker ' +
+              'workerVersionUpdated events — use list_all_targets + inspect_service_worker_logs to debug a live worker.'
+          };
         }
-        
-        return {
-          success: true,
-          worker: {
-            registrationId: worker.registrationId,
-            scopeURL: worker.scopeURL,
-            scriptURL: worker.scriptURL,
-            status: worker.status,
-            versionId: worker.versionId,
-            runningStatus: worker.runningStatus
+
+        // Fallback: the caller passed a target ID — return the CDP target info.
+        if (targetId) {
+          const targets: any[] = await CDP.List({ port: connector.getPort() });
+          const target = targets.find((t: any) => t.id === targetId && t.type === 'service_worker');
+          if (target) {
+            return {
+              success: true,
+              worker: {
+                targetId: target.id,
+                scopeURL: target.url,
+                scriptURL: target.url,
+                title: target.title || '',
+              }
+            };
           }
-        };
+          throw new Error(`No service_worker target found with id: ${targetId}`);
+        }
+
+        throw new Error(
+          'Service worker not found. Provide registrationId (after ServiceWorker.enable() events) or a ' +
+          'service_worker targetId from list_service_workers / list_all_targets.'
+        );
       }
     },
 
@@ -220,7 +244,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
           expression: `
             (async () => {
               const registrations = await navigator.serviceWorker.getRegistrations();
-              const reg = registrations.find(r => r.scope === '${scopeURL}');
+              const reg = registrations.find(r => r.scope === ${JSON.stringify(scopeURL)});
               if (reg) {
                 const unregistered = await reg.unregister();
                 return { success: unregistered };
@@ -258,7 +282,7 @@ export function createServiceWorkerTools(connector: ChromeConnector) {
           expression: `
             (async () => {
               const registrations = await navigator.serviceWorker.getRegistrations();
-              const reg = registrations.find(r => r.scope === '${scopeURL}');
+              const reg = registrations.find(r => r.scope === ${JSON.stringify(scopeURL)});
               if (reg) {
                 await reg.update();
                 return { success: true };

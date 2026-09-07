@@ -1,393 +1,282 @@
-# Custom Chrome MCP - AI Usage Guide
+# Chrome Devtools Advanced MCP — Usage Guide
 
-## 🎯 Philosophy: Always Analyze Before Acting
-
-**GOLDEN RULE**: Never guess selectors or click blindly. Always analyze the page structure first.
-
----
-
-## 📋 Common Workflows
-
-### 1. Basic Web Navigation & Interaction
-
-```
-CORRECT WORKFLOW:
-1️⃣ navigate - Go to the website
-2️⃣ wait_for_load_state - Wait for page to fully load (use 'networkidle')
-3️⃣ get_html or screenshot - ANALYZE the page structure
-4️⃣ Identify correct CSS selectors from the HTML
-5️⃣ click or type - Interact using verified selectors
-
-EXAMPLE:
-User: "Go to google.com and search for cats"
-
-Correct sequence:
-1. navigate("https://google.com")
-2. wait_for_load_state("networkidle")
-3. get_html() → See: <input name="q" class="gLFyf">
-4. type("input[name='q']", "cats")
-5. click("input[value='Google Search']")
-```
-
-**❌ WRONG**: 
-```
-navigate → click(".search-button")  // NO! You don't know if .search-button exists!
-```
-
-**✅ RIGHT**:
-```
-navigate → get_html → find selector → click with verified selector
-```
+A practical guide for the AI (and its human) on how to drive Chrome through
+this MCP server. Tool names below are the **current (v1.4) consolidated
+names** — early guides used a different vocabulary where navigation, clicks
+and tab listing were separate plain-named tools; those tools no longer exist
+(the table in [Common Mistakes](#-common-mistakes) maps the old names to the
+current ones).
 
 ---
 
-### 2. Extension Debugging
+## 🎯 Golden Rules
 
-```
-WORKFLOW:
-1️⃣ list_all_targets - Find all execution contexts
-   → Filter by 'service_worker' to see extensions
-2️⃣ Identify your extension - Look for title/url matching your extension
-3️⃣ Get targetId - Copy the ID from the target
-4️⃣ connect_to_target - Establish connection to that target
-5️⃣ execute_in_target - Run code in the extension context
-6️⃣ inspect_service_worker_logs - See console output (optional)
-
-EXAMPLE:
-User: "Debug my Chrome extension background script"
-
-1. list_all_targets(filterType: 'service_worker')
-   → Result: [{id: "ABC123", title: "My Extension", type: "service_worker"}]
-2. connect_to_target("ABC123")
-3. execute_in_target("ABC123", "return chrome.runtime.getManifest()")
-4. inspect_service_worker_logs("ABC123") → See console.log output
-```
-
-**⚠️ CRITICAL**: 
-- Use `execute_in_target` for extension contexts, NOT `execute_script`
-- `execute_script` only works on page contexts (tabs)
-- Extension service workers are separate execution contexts
+1. **Analyze before you act.** Never guess selectors: call `get_html` (or
+   `screenshot`) first, then interact with verified selectors.
+2. **Wait before interacting.** After navigation, call `wait_for_load_state`
+   (or rely on the auto-wait in `perform_interaction`).
+3. **Launch only on request.** `launch_chrome_with_profile` opens a visible
+   Chrome with the user's real profile. Do **not** call it proactively.
+4. **Respect the security defaults** (see [Security defaults](#-security-defaults)):
+   cookie values are redacted unless you ask for them, and only `http(s)` URLs
+   can be navigated to.
 
 ---
 
-### 3. Network Traffic Interception
+## 🚀 Quick Start
+
+1. User asks to open the browser → call:
+
+   ```json
+   { "tool": "launch_chrome_with_profile", "args": { "profileDirectory": "Default" } }
+   ```
+
+2. Check state with `get_browser_status` (`browser_action`/`manage_tabs` are
+   the daily drivers; the **~52 advanced tools** are hidden until you call
+   `show_advanced_tools` — do that when a task needs them).
+
+---
+
+## 🧭 Navigation & Tabs (consolidated tools)
+
+| Task | Tool & arguments |
+|---|---|
+| Go to a page | `browser_action` with `action:"navigate", url:"https://…", waitUntil:"load"` |
+| Back / forward / reload | `browser_action` with `action:"back"` / `"forward"` / `"reload"` |
+| List tabs | `manage_tabs` with `action:"list"` |
+| New tab / close / switch | `manage_tabs` with `action:"create"|"close"|"switch"` (+ `url`/`tabId`) |
+| Get current URL | `manage_tabs` with `action:"get_url"` |
+| Wait for page ready | `wait_for_load_state` with `state:"networkidle"` |
+
+> Only `http(s)` URLs are accepted for navigation (`file://` is blocked for
+> security; `about:blank` and `chrome://newtab/` are allowed).
+
+### Example: correct navigation flow
 
 ```
-WORKFLOW FOR INSPECTING REQUESTS:
-1️⃣ enable_response_interception - Start capturing responses
-   → Or use enable_network_interception for simpler request-only capture
-2️⃣ navigate - Trigger the network request
-3️⃣ list_intercepted_responses - See what was captured
-4️⃣ modify_intercepted_response - Change response if needed (optional)
-5️⃣ disable_response_interception - Stop capturing
-
-WORKFLOW FOR MOCKING ENDPOINTS:
-1️⃣ create_mock_endpoint - Set up fake API response
-   → Pattern: "*api.example.com/users*"
-   → Response: {"users": [...]}
-2️⃣ navigate - Page will hit mock instead of real API
-3️⃣ Test your frontend with fake data
-4️⃣ delete_mock_endpoint - Clean up
-
-⚠️ CONFLICTS:
-- Cannot use response_interception AND mock_endpoint simultaneously
-- Choose one: interception (for analysis) OR mocking (for testing)
+1. browser_action   → { action: "navigate", url: "https://example.com", waitUntil: "load" }
+2. wait_for_load_state → { state: "networkidle", timeout: 15000 }
+3. get_html          → analyze the structure (no selector = full page)
+4. perform_interaction → click/type using verified selectors
 ```
 
 ---
 
-### 4. Form Filling & Submission
+## 🖱️ Interaction
+
+`perform_interaction` is the single interaction tool — it covers everything
+the old `click`/`type`/`scroll` tools did:
+
+| Action | Example arguments |
+|---|---|
+| Click | `perform_interaction` `{ action:"click", selector:"button#submit" }` |
+| Type | `perform_interaction` `{ action:"type", selector:"input[name=q]", text:"cats" }` |
+| Select | `perform_interaction` `{ action:"select", selector:"select#country", value:"ES" }` |
+| Scroll | `perform_interaction` `{ action:"scroll", coordinateX:0, coordinateY:600 }` |
+| Wait for element | `perform_interaction` `{ action:"wait", selector:".spinner", timeoutMs:10000 }` |
+
+Fill several fields at once with `fill_form`:
 
 ```
-WORKFLOW:
-1️⃣ navigate to form page
-2️⃣ wait_for_load_state('networkidle')
-3️⃣ get_html → Analyze form structure
-4️⃣ Identify input selectors:
-   - input#email
-   - input[name="password"]
-   - button[type="submit"]
-5️⃣ type into each field with verified selectors
-6️⃣ click submit button with verified selector
-
-EXAMPLE:
-1. navigate("https://example.com/login")
-2. wait_for_load_state("networkidle")
-3. get_html() → See: 
-   <input id="email" type="email">
-   <input id="password" type="password">
-   <button type="submit">Login</button>
-4. type("#email", "user@example.com")
-5. type("#password", "mypassword")
-6. click("button[type='submit']")
+fill_form → {
+  fields: [ { selector: "#email", value: "me@example.com" },
+            { selector: "#password", value: "…" } ],
+  submitSelector: "button[type=submit]"
+}
 ```
+
+Read page data with:
+
+- `get_html` — HTML of the whole page or of a CSS `selector` (truncated to
+  50 KB; prefer a selector or `execute_script` for big pages).
+- `extract_element_data` — `action:"text"` or `action:"attribute"` for a
+  single element.
+- `execute_script` — arbitrary JS **with a `return`**; `awaitPromise:true` for
+  async code. Prefer the dedicated tools; `execute_script` is the escape hatch
+  for complex extractions (e.g. `querySelectorAll` + `map`).
+- `screenshot` / `print_to_pdf` — screenshots and PDFs are **saved to disk**
+  and returned as `filePath` (not inline base64) to keep responses small.
+- `get_page_metrics` — layout/viewport info.
+
+> Interacting with a page that React/Vue controls (inputs, virtual lists) is
+> most reliable through the form/click actions above; when a modern SPA does
+> not react, use `execute_script` with the native value setter pattern.
 
 ---
 
-### 5. Data Extraction / Web Scraping
+## 🛡️ Anti-Detection & Browser Environment
 
-```
-WORKFLOW:
-1️⃣ navigate to target page
-2️⃣ wait_for_load_state('networkidle') - Ensure dynamic content loaded
-3️⃣ get_html → Get full page structure
-4️⃣ execute_script with complex query:
-   return Array.from(document.querySelectorAll('.item'))
-     .map(el => ({
-       title: el.querySelector('.title').textContent,
-       price: el.querySelector('.price').textContent
-     }))
+Applied automatically on launch and adjustable per tab:
 
-WHEN TO USE execute_script:
-✅ Complex data extraction (querySelectorAll + map/filter)
-✅ Accessing window variables (return window.appConfig)
-✅ Triggering custom events
-✅ Advanced DOM manipulation
+- `enable_stealth_mode` — re-apply stealth patches to a tab (webdriver=false,
+  fingerprint noise). Already active by default.
+- `set_user_agent`, `set_viewport`, `set_geolocation`, `set_timezone` —
+  impersonate a device/location for a tab.
 
-WHEN NOT TO USE execute_script:
-❌ Simple clicks (use click tool instead)
-❌ Simple typing (use type tool instead)
-❌ Getting HTML (use get_html instead)
-```
+Realism notes: this server drives your **real Chrome + real profile**, so it
+does not spoof platform/GPU values that would contradict the environment —
+the real values are the most believable ones.
 
 ---
 
-### 6. Visual Analysis & Debugging
+## 📡 Network: two interception families
+
+There are two complementary stacks (all advanced — unlock with
+`show_advanced_tools`).
+
+### 1. Request interception & replay — `start_capturing_network_requests` family
+
+Use for **request-level** capture, modification and replay:
 
 ```
-WORKFLOW:
-1️⃣ navigate
-2️⃣ screenshot - Take visual snapshot
-3️⃣ Analyze screenshot visually
-4️⃣ Identify elements by their visual position
-5️⃣ get_html to find selectors for those elements
-6️⃣ Interact with verified selectors
-
-WHEN TO USE SCREENSHOT:
-✅ Page layout is complex
-✅ Need visual confirmation (before/after actions)
-✅ Debugging UI issues
-✅ HTML is too large to analyze
-
-WHEN TO USE GET_HTML:
-✅ Need exact selectors
-✅ Scraping structured data
-✅ Analyzing page structure
-✅ Finding element attributes/IDs/classes
+1. start_capturing_network_requests → { patterns: ["*api*"], autoContinue: true }
+2. (perform the action that triggers the request)
+3. show_captured_network_traffic   → find requestId
+4. resend_network_request          → { requestId } (CORS may block; for
+                                     authenticated replay, modify BEFORE sending)
+   or modify_network_request       → change headers/body while paused
+   or block_network_request        → fail the request deliberately
+5. stop_capturing_network_requests → detach (disable works on the same session)
 ```
+
+### 2. Response interception & mocking — `enable_response_interception` family
+
+Use for **response-level** capture, modification, mocking and HAR:
+
+```
+1. enable_response_interception → { patterns: ["*"], autoContinue: true }
+   (or autoContinue:false + pauseMode for step-by-step modification)
+2. trigger traffic; list_intercepted_responses → requestId
+3. modify_intercepted_response → change body/headers/status
+4. disable_response_interception → stops cleanly on the same CDP session
+```
+
+**Mocking:** `create_mock_endpoint` returns canned responses for a pattern —
+multiple mocks can be active at once; `list_mock_endpoints`,
+`delete_mock_endpoint`, `clear_all_mocks`. Mocks and response interception are
+mutually exclusive by design.
+
+**WebSockets:** `enable_websocket_interception` →
+`list_websocket_connections` / `list_websocket_messages` →
+`disable_websocket_interception`. `send_websocket_message` cannot push frames
+into an already-open socket (CDP limitation); it hooks new connections and
+reports honestly whether the message went out.
+
+**HAR:** `start_har_recording` → do things → `stop_har_recording` (returns the
+HAR and parks it) → `export_har_file { filename }` writes it to disk
+(sandboxed to your working dir / temp folder).
+
+**Helpers:** `add_custom_header_to_request`,
+`intercept_and_modify_traffic`, `capture_network_on_action`,
+`extract_api_data`, `navigate_and_extract_content`,
+`test_api_endpoint`, `simulate_user_journey`, `add_advanced_interception_pattern`,
+plus persistent CSS/JS injection (`inject_css_global`, `inject_js_global`,
+`list_injected_scripts`, `remove_injection`, `clear_all_injections`).
 
 ---
 
-### 7. HAR Recording (Performance Analysis)
+## 🍪 Cookies, Storage & Sessions
 
-```
-WORKFLOW:
-1️⃣ start_har_recording - Begin capturing all network traffic
-2️⃣ navigate or perform actions - Trigger network requests
-3️⃣ stop_har_recording - Stop capture
-4️⃣ get_har_entries - Analyze requests/responses
-   → Or export_har_file - Save for external analysis
+| Tool | Purpose |
+|---|---|
+| `get_cookies` | List cookies for the page/URL. **Values are redacted by default** — pass `includeValues:true` only when you truly need them |
+| `set_cookie` / `delete_cookie` / `clear_cookies` | Manage cookies |
+| `get_local_storage` / `set_local_storage` / `clear_local_storage` | Page storage |
+| `get_indexed_db` | Inspect IndexedDB (read-only, never creates DBs) |
+| `export_session` | Dump cookies+storage as JSON. **Values redacted by default**; `includeValues:true` is required for a restorable backup |
+| `import_session` | Restore a previously exported session (valueless cookies are skipped with a warning) |
+| `manage_browser_session` | One-call save/load/clear/export (same `includeValues` behavior) |
+| `test_with_different_cookies` | Test a URL with custom cookies in a **throwaway isolated context** — never touches the real session |
 
-USE CASES:
-- Performance testing (find slow requests)
-- Network debugging (see all API calls)
-- Security analysis (inspect headers/cookies)
-- Regression testing (compare HAR files)
-```
-
----
-
-### 8. CSS/JS Injection (Persistent Modifications)
-
-```
-WORKFLOW FOR STYLING:
-1️⃣ inject_css_global - Add persistent styles
-   → CSS applies to all new pages automatically
-2️⃣ navigate to any page
-3️⃣ CSS is automatically injected
-4️⃣ clear_all_injections - Remove when done
-
-WORKFLOW FOR BEHAVIOR:
-1️⃣ inject_js_global - Add persistent JavaScript
-   → Runs BEFORE page scripts
-   → Can intercept functions
-2️⃣ navigate to any page
-3️⃣ Your code runs automatically
-4️⃣ clear_all_injections - Remove when done
-
-USE CASES:
-- UI customization (dark mode, hide elements)
-- Function interception (override fetch, console.log)
-- Auto-fill forms
-- Add custom buttons/features
-```
+> Use `get_console_logs` to read the tab's console (buffered, last 500
+> entries); it starts capturing on first call. `clear_console_logs` empties the
+> buffer. For service-worker / extension console output, use the
+> service-worker tools (`inspect_service_worker_logs`, …).
 
 ---
 
-## 🚫 Common Mistakes to Avoid
+## 🧩 Extensions & Service Workers (advanced)
 
-### ❌ Mistake #1: Guessing Selectors
-```javascript
-// WRONG
-navigate("https://example.com")
-click(".login-button")  // What if .login-button doesn't exist?
-```
-
-```javascript
-// RIGHT
-navigate("https://example.com")
-get_html()  // See: <button id="signin">Login</button>
-click("#signin")  // Use verified selector
-```
+1. `list_all_targets` (or `list_service_workers`) → find the target id.
+2. `connect_to_target` / `execute_in_target` → talk to a specific context
+   (extension SW, iframe, worker) — `execute_script` only runs in page tabs.
+3. `get_extension_service_workers`, `get_service_worker`,
+   `start_service_worker`, `stop_service_worker`, `update_service_worker`,
+   `skip_waiting`, `get_sw_caches`, `inspect_service_worker_logs`,
+   `unregister_service_worker` (permanent removal — careful).
 
 ---
 
-### ❌ Mistake #2: Not Waiting for Page Load
-```javascript
-// WRONG
-navigate("https://example.com")
-click("#button")  // Button might not exist yet!
-```
+## ♿ Accessibility & Performance (advanced)
 
-```javascript
-// RIGHT
-navigate("https://example.com")
-wait_for_load_state("networkidle")  // Wait for page to finish loading
-get_html()  // Now analyze
-click("#button")  // Now interact
-```
+- `get_accessibility_tree` — full tree (roles, names, values) for audits.
+- `get_accessibility_snapshot` — compact YAML-like view of interactive roles.
+- `run_performance_audit` — Core Web Vitals + basic timing (call right after
+  navigation, before other interactions).
+- `emulate_network_conditions` — throttle to `slow-3g`/`fast-3g`/`4g`/`offline`
+  or reset with `none`.
+
+Use the built-in prompts for guided passes: `audit-accessibility`,
+`debug-console-errors`, `scrape-table`.
 
 ---
 
-### ❌ Mistake #3: Using Wrong Tool for Context
-```javascript
-// WRONG - Trying to debug extension with execute_script
-list_all_targets()  // Find extension targetId: "ABC123"
-execute_script("chrome.runtime.getManifest()")  // ❌ Won't work!
-```
+## 📚 MCP Resources
 
-```javascript
-// RIGHT - Use execute_in_target for extensions
-list_all_targets()  // Find extension: "ABC123"
-connect_to_target("ABC123")
-execute_in_target("ABC123", "return chrome.runtime.getManifest()")  // ✅ Works!
-```
+Each open tab is exposed as a listable, cacheable resource:
+
+- `chrome://tab/{tabId}/html` — current page HTML
+- `chrome://tab/{tabId}/screenshot` — current viewport PNG
+- `chrome://tab/{tabId}/har` — live HAR buffer (needs an active recording)
+
+Find `tabId` via `manage_tabs` (`action:"list"`).
 
 ---
 
-### ❌ Mistake #4: Over-using execute_script
-```javascript
-// WRONG - Using execute_script for simple actions
-execute_script("document.querySelector('#button').click()")
-```
+## 🔒 Security defaults (read before delegating sensitive tasks)
 
-```javascript
-// RIGHT - Use dedicated tools
-get_html()  // Verify selector exists
-click("#button")  // Simpler, more reliable
-```
-
----
-
-### ❌ Mistake #5: Not Analyzing Before Clicking
-```javascript
-// WRONG
-User: "Click the submit button on example.com"
-navigate("https://example.com")
-click("button")  // Which button? There might be many!
-```
-
-```javascript
-// RIGHT
-navigate("https://example.com")
-get_html()  // Analyze: <button class="submit-btn">Submit</button>
-click(".submit-btn")  // Use specific selector
-```
+- **Navigation** only accepts `http(s)` (plus `about:blank`/`chrome://newtab/`).
+  `file://` is blocked — set `CHROME_MCP_ALLOW_FILE_URLS=1` in the server env
+  only for local testing.
+- **Cookie values are redacted** unless `includeValues:true` is passed.
+- **HAR exports and downloads are sandboxed** to the working directory or the
+  system temp folder.
+- The **CDP debug port uses an origin allow-list** (localhost/DevTools), so
+  web pages cannot hijack it.
+- `close_browser` / server shutdown only close a Chrome that this MCP launched;
+  your own browsing sessions are never force-killed.
 
 ---
 
-## 🎓 Decision Trees
+## 🚫 Common Mistakes
 
-### "Should I use screenshot or get_html?"
-
-```
-START: Need to analyze page
-├─ Need exact selectors/IDs/classes? → get_html
-├─ Need visual layout/position? → screenshot
-├─ HTML is very large (>50KB)? → screenshot first, then get_html if needed
-└─ Need both? → screenshot (visual), then get_html (selectors)
-```
-
-### "Should I use execute_script or dedicated tools?"
-
-```
-START: Need to interact with page
-├─ Simple click? → click tool
-├─ Simple type? → type tool
-├─ Get HTML? → get_html tool
-├─ Complex query (querySelectorAll + map)? → execute_script
-├─ Access window variables? → execute_script
-└─ Trigger custom events? → execute_script
-```
-
-### "Which interception tool should I use?"
-
-```
-START: Need to intercept network traffic
-├─ Need to ANALYZE real traffic? → enable_response_interception
-├─ Need to MOCK/FAKE responses? → create_mock_endpoint
-├─ Need WebSocket traffic? → enable_websocket_interception
-├─ Need HAR file for analysis? → start_har_recording
-└─ Just need simple request logging? → enable_network_interception
-```
+| ❌ Old habit | ✅ Current tool |
+|---|---|
+| `navigate("url")` | `browser_action` `{ action:"navigate", url }` |
+| `click("#x")` / `type("#x","t")` | `perform_interaction` `{ action:"click"\|"type", … }` |
+| `list_tabs` / `create_tab` | `manage_tabs` `{ action:"list"\|"create", … }` |
+| `enable_network_interception` | `start_capturing_network_requests` |
+| `list_intercepted_requests` | `show_captured_network_traffic` |
+| `get_har_entries` | `stop_har_recording` → `export_har_file` |
+| `monitor_websocket_messages` | `list_websocket_messages` |
 
 ---
 
-## 🔧 Troubleshooting
+## 🧰 Troubleshooting
 
-### Problem: "Element not found" errors
-**Solution**: Always use get_html BEFORE clicking to verify selector exists
+- **"Element not found"** → `get_html` first; selector may need
+  `iframe`/shadow-DOM handling via `execute_script`.
+- **"Tool disabled by user" (VS Code)** → reload VS Code and press
+  **Always Allow** when the tool is invoked again.
+- **Advanced tools not visible** → call `show_advanced_tools`.
+- **Page seems frozen after interception** → call the matching
+  disable/continue tool (`disable_response_interception` /
+  `stop_capturing_network_requests` / `continue_network_request`) — these now
+  act on the same CDP session that enabled the interception.
+- **Timeout errors** → increase `timeout`/`timeoutMs`; prefer
+  `wait_for_load_state` after navigation.
+- **Chrome opens but tools can't connect** → confirm only one Chrome is
+  attached; `get_browser_status` shows the connection state and CDP port.
 
-### Problem: "Timeout" errors
-**Solution**: Use wait_for_load_state("networkidle") after navigation
-
-### Problem: "Cannot read property of undefined" in extension
-**Solution**: Verify you're using execute_in_target, not execute_script
-
-### Problem: Mock endpoint not working
-**Solution**: Check if response_interception is active (conflicts with mocks)
-
-### Problem: Injection not persisting
-**Solution**: Use inject_css_global/inject_js_global, not execute_script
-
----
-
-## 💡 Pro Tips
-
-1. **Always analyze before acting** - get_html or screenshot first
-2. **Use specific selectors** - ID > class > tag name
-3. **Wait for page load** - Use wait_for_load_state("networkidle")
-4. **Test selectors in browser console** - Before using them in tools
-5. **Use timeouts wisely** - Increase for slow pages, decrease for fast ones
-6. **Clean up after yourself** - Clear injections, disable interceptors
-7. **Read tool descriptions** - They contain workflows and examples
-8. **Combine tools logically** - navigate → wait → analyze → interact
-
----
-
-## 📚 Quick Reference
-
-| Task | Tools | Workflow |
-|------|-------|----------|
-| Navigate web | navigate → wait_for_load_state → get_html → click/type | Analysis-first approach |
-| Debug extension | list_all_targets → connect_to_target → execute_in_target | Extension-specific execution |
-| Intercept traffic | enable_response_interception → navigate → list_intercepted_responses | Live traffic capture |
-| Mock APIs | create_mock_endpoint → navigate | Testing without backend |
-| Scrape data | navigate → wait → get_html → execute_script (complex queries) | Structured extraction |
-| Visual debug | navigate → screenshot → analyze → get_html → interact | Visual-first analysis |
-| Performance | start_har_recording → actions → stop → get_har_entries | Full network profile |
-| Inject styles | inject_css_global → navigate → clear_all_injections | Persistent modifications |
-
----
-
-**Remember**: The AI should read page structure BEFORE attempting any interaction. Never guess - always verify!
+**Remember:** analyze with `get_html`/`screenshot` before any interaction.
+Never guess — always verify.

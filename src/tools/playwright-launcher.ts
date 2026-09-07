@@ -4,9 +4,6 @@
  */
 
 import { z } from 'zod';
-import * as path from 'path';
-import * as os from 'os';
-import * as fs from 'fs';
 import type { ChromeConnector } from '../chrome-connector.js';
 
 export function createPlaywrightLauncherTools(connector: ChromeConnector) {

@@ -27,6 +27,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Docs drift check (guides must only cite existing tools)
+        run: npm run docs:check
+
       - name: Build
         run: npm run build
 

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
 import { truncateOutput } from '../utils/truncate.js';
 import { saveBase64ToFile } from '../utils/file-storage.js';
+import { withTimeout } from '../utils/helpers.js';
 
 export function createCaptureTools(connector: ChromeConnector) {
   return [
@@ -234,7 +235,13 @@ export function createCaptureTools(connector: ChromeConnector) {
         if (paperWidth) options.paperWidth = paperWidth;
         if (paperHeight) options.paperHeight = paperHeight;
 
-        const { data } = await Page.printToPDF(options);
+        // printToPDF can hang on pathological pages — always race it.
+        const printResult: any = await withTimeout(
+          Page.printToPDF(options),
+          60000,
+          'print_to_pdf timed out after 60s'
+        );
+        const { data } = printResult;
 
         let filePath: string;
         try {

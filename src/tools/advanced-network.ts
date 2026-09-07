@@ -5,10 +5,9 @@
 
 import { z } from 'zod';
 import type { ChromeConnector } from '../chrome-connector.js';
-import { withTimeout } from '../utils/helpers.js';
-import { truncateOutput, truncateArray } from '../utils/truncate.js';
+import { withTimeout, getPackageVersion } from '../utils/helpers.js';
+import { resolveOutputPath } from '../utils/file-storage.js';
 import * as fs from 'fs/promises';
-import * as path from 'path';
 
 // Storage for intercepted responses
 const interceptedResponses = new Map<string, Map<string, any>>();
@@ -28,6 +27,58 @@ const websocketMessages = new Map<string, any[]>();
 
 // Storage for HAR recording
 const harRecordings = new Map<string, any>();
+// Most recently completed HAR per tab (stop_har_recording parks it here so
+// export_har_file can still write it — previously the documented
+// stop→export flow always failed because stop deleted the recording).
+const lastCompletedHar = new Map<string, any>();
+
+// Hard caps so long-lived sessions cannot grow without bound.
+const MAX_HISTORY_ENTRIES = 200;
+const MAX_WS_CONNECTIONS = 200;
+const MAX_WS_MESSAGES = 1000;
+const MAX_HAR_ENTRIES = 2000;
+
+// Owning CDP sessions (per tab key) + the unsubscribe handles for their
+// event listeners. Fetch/Network enable-state is SESSION-scoped, so every
+// enable/disable/modify/fulfill call must go through the session that owns
+// the interception; otherwise "disable" is a silent no-op that freezes the
+// page on the next matching request.
+interface OwnedSession {
+  client: any;
+  unsubscribe: () => void;
+}
+const responseInterceptionSessions = new Map<string, OwnedSession>();
+const mockSessions = new Map<string, OwnedSession>();
+const websocketSessions = new Map<string, OwnedSession>();
+// Injection registrations are also session-scoped: keep the registering
+// client so remove/clear can actually remove the scripts.
+const injectionClients = new Map<string, { client: any; ids: string[] }>();
+
+/**
+ * Reset ALL module-level capture/interception state and detach listeners.
+ * Called on browser disconnect/relaunch so a fresh Chrome session never
+ * inherits stale buffers, paused requests or dead listeners.
+ */
+export function resetAdvancedNetworkState(): void {
+  for (const session of [responseInterceptionSessions, mockSessions, websocketSessions]) {
+    for (const entry of session.values()) {
+      try { entry.unsubscribe(); } catch { /* ignore */ }
+      try { entry.client.Fetch?.disable(); } catch { /* ignore */ }
+      try { entry.client.Network?.disable(); } catch { /* ignore */ }
+    }
+    session.clear();
+  }
+  interceptedResponses.clear();
+  responseHistory.clear();
+  responseInterceptionState.clear();
+  mockEndpoints.clear();
+  websocketConnections.clear();
+  websocketMessages.clear();
+  harRecordings.clear();
+  lastCompletedHar.clear();
+  injectedScripts.clear();
+  injectionClients.clear();
+}
 
 /**
  * Read-only snapshot of the current HAR recording buffer for a tab, without
@@ -43,7 +94,7 @@ export function getHarSnapshot(tabId?: string): any {
     return {
       log: {
         version: '1.2',
-        creator: { name: 'Custom Chrome MCP', version: '1.0.9' },
+        creator: { name: 'Custom Chrome MCP', version: getPackageVersion() },
         pages: [],
         entries: [],
       },
@@ -55,7 +106,7 @@ export function getHarSnapshot(tabId?: string): any {
   return {
     log: {
       version: '1.2',
-      creator: { name: 'Custom Chrome MCP', version: '1.0.9' },
+      creator: { name: 'Custom Chrome MCP', version: getPackageVersion() },
       pages: recording.pages,
       entries: recording.entries,
     },
@@ -66,26 +117,6 @@ export function getHarSnapshot(tabId?: string): any {
 
 // Storage for injected scripts
 const injectedScripts = new Map<string, string[]>();
-
-/**
- * Helper function to wrap tool handlers with error handling
- */
-async function safeHandler<T>(
-  operation: () => Promise<T>,
-  errorMessage: string = 'Operation failed'
-): Promise<T | { success: false; error: string; details?: string; suggestion?: string }> {
-  try {
-    return await operation();
-  } catch (error: any) {
-    console.error(`[Advanced Network Tools] ${errorMessage}:`, error);
-    return {
-      success: false,
-      error: error.message || errorMessage,
-      details: error.stack,
-      suggestion: 'Check Chrome connection and ensure the page is loaded'
-    };
-  }
-}
 
 export function createAdvancedNetworkTools(connector: ChromeConnector) {
   return [
@@ -170,66 +201,78 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             pausedCount: 0
           });
           
-          // Register listener on persistent client - stays active!
-          Fetch.requestPaused(async (params: any) => {
+          // Tear down a previous response-interception session for this tab:
+          // listeners must never stack across re-enables (Fetch.enable above
+          // already replaced the pattern set on this same persistent session).
+          const previous = responseInterceptionSessions.get(effectiveTabId);
+          if (previous) {
+            try { previous.unsubscribe(); } catch { /* ignore */ }
+            responseInterceptionSessions.delete(effectiveTabId);
+          }
+
+          // Register listener on the owning persistent session.
+          const unsubscribe = Fetch.requestPaused(async (params: any) => {
             try {
               const responses = interceptedResponses.get(effectiveTabId);
               const state = responseInterceptionState.get(effectiveTabId);
-              
-              if (responses) {
-                responses.set(params.requestId, params);
-                console.error(`[Response Interceptor] Captured: ${params.request?.url}`);
-                
-                // Determine if we should auto-continue this response
-                let shouldAutoContinue = state?.autoContinue ?? true;
-                
-                // Handle special pause modes when autoContinue is false
-                if (state && !state.autoContinue && state.pauseMode !== 'persistent') {
-                  if (state.pauseMode === 'firstOnly') {
-                    // After first pause, switch to auto-continue
-                    if (state.pausedCount > 0) {
-                      shouldAutoContinue = true;
-                    } else {
-                      state.pausedCount++;
-                    }
-                  } else if (state.pauseMode === 'limitedPause') {
-                    // Pause up to maxPaused responses
-                    if (state.pausedCount >= maxPaused) {
-                      shouldAutoContinue = true;
-                    } else {
-                      state.pausedCount++;
-                    }
-                  }
-                }
-                
-                // Auto-continue if enabled or triggered by pause mode
-                if (shouldAutoContinue) {
-                  try {
-                    // Store in history before continuing and deleting
-                    if (!responseHistory.has(effectiveTabId)) {
-                      responseHistory.set(effectiveTabId, []);
-                    }
-                    const history = responseHistory.get(effectiveTabId)!;
-                    
-                    // Add to history (keep max 100 items)
-                    history.unshift({
-                        ...params,
-                        status: 'auto-continued',
-                        timestamp: Date.now()
-                    });
-                    if (history.length > 100) history.pop();
 
-                    await Fetch.continueRequest({ requestId: params.requestId });
-                    responses.delete(params.requestId);
-                  } catch (e) {
-                    console.error(`[Auto-continue] Failed for ${params.request?.url}:`, e);
+              // Interception disabled but Fetch still enabled (safety net):
+              // never leave a response paused without an owner.
+              if (!responses || !state) {
+                await Fetch.continueRequest({ requestId: params.requestId }).catch(() => {});
+                return;
+              }
+
+              responses.set(params.requestId, params);
+              console.error(`[Response Interceptor] Captured: ${params.request?.url}`);
+
+              // Determine if we should auto-continue this response
+              let shouldAutoContinue = state?.autoContinue ?? true;
+
+              // Handle special pause modes when autoContinue is false
+              if (state && !state.autoContinue && state.pauseMode !== 'persistent') {
+                if (state.pauseMode === 'firstOnly') {
+                  // After first pause, switch to auto-continue
+                  if (state.pausedCount > 0) {
+                    shouldAutoContinue = true;
+                  } else {
+                    state.pausedCount++;
+                  }
+                } else if (state.pauseMode === 'limitedPause') {
+                  // Pause up to maxPaused responses
+                  if (state.pausedCount >= maxPaused) {
+                    shouldAutoContinue = true;
+                  } else {
+                    state.pausedCount++;
                   }
                 }
               }
+
+              // Auto-continue if enabled or triggered by pause mode
+              if (shouldAutoContinue) {
+                // Store in history before continuing and deleting
+                if (!responseHistory.has(effectiveTabId)) {
+                  responseHistory.set(effectiveTabId, []);
+                }
+                const history = responseHistory.get(effectiveTabId)!;
+
+                // Add to history (capped)
+                history.unshift({
+                  ...params,
+                  status: 'auto-continued',
+                  timestamp: Date.now()
+                });
+                if (history.length > MAX_HISTORY_ENTRIES) history.pop();
+
+                await Fetch.continueRequest({ requestId: params.requestId });
+                responses.delete(params.requestId);
+              }
             } catch (e) {
               console.error('[Response Interception] Error storing intercepted response:', e);
+              await Fetch.continueRequest({ requestId: params.requestId }).catch(() => {});
             }
           });
+          responseInterceptionSessions.set(effectiveTabId, { client, unsubscribe });
           
           console.error(`✅ Response interceptor ACTIVE and listening for patterns: ${patterns.join(', ')}`);
           
@@ -272,15 +315,27 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       handler: async ({ tabId }: any) => {
         try {
           await connector.verifyConnection();
-          const client = await connector.getTabClient(tabId);
-          const { Fetch } = client;
-          
-          await Fetch.disable();
-          
           const effectiveTabId = tabId || 'default';
+
+          // Disable Fetch on the SAME session that enabled it (Fetch domain
+          // enable-state is session-scoped — disabling elsewhere is a no-op
+          // that would leave responses paused forever).
+          const session = responseInterceptionSessions.get(effectiveTabId);
+          if (session) {
+            try { session.unsubscribe(); } catch { /* ignore */ }
+            try { await session.client.Fetch.disable(); } catch (e) { console.error('[disable_response_interception] Fetch.disable error:', (e as Error).message); }
+            responseInterceptionSessions.delete(effectiveTabId);
+          } else {
+            // Best-effort fallback for state created before the session fix.
+            try {
+              const client = await connector.getPersistentClient(tabId);
+              await client.Fetch.disable();
+            } catch { /* no active interception */ }
+          }
+
           interceptedResponses.delete(effectiveTabId);
           responseInterceptionState.delete(effectiveTabId);
-          
+
           return {
             success: true,
             message: 'Response interception disabled'
@@ -371,17 +426,22 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       handler: async ({ requestId, modifiedBody, modifiedHeaders, modifiedStatusCode, timeoutMs = 15000, tabId }: any) => {
         try {
           await withTimeout(connector.verifyConnection(), Math.min(timeoutMs, 5000), 'Connection verification timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), Math.min(timeoutMs, 5000), 'Failed to get tab client');
+          const effectiveTabId = tabId || 'default';
+
+          // Fulfill on the SAME session that paused the response (the owner
+          // of the interception). Fall back to a fresh client only if no
+          // owner is tracked (pre-fix state).
+          const session = responseInterceptionSessions.get(effectiveTabId);
+          const client = session?.client ?? (await withTimeout(connector.getPersistentClient(tabId), Math.min(timeoutMs, 5000), 'Failed to get tab client'));
           const { Fetch } = client;
-          
+
           if (!Fetch) {
             throw new Error('Fetch domain not available');
           }
-          
-          const effectiveTabId = tabId || 'default';
+
           const responses = interceptedResponses.get(effectiveTabId);
           const originalResponse = responses?.get(requestId);
-          
+
           if (!originalResponse) {
             return {
               success: false,
@@ -389,7 +449,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
               suggestion: 'Use list_intercepted_responses to get valid request IDs. The response may have timed out or already been processed.'
             };
           }
-          
+
           const headers: any[] = [];
           if (modifiedHeaders) {
             Object.entries(modifiedHeaders).forEach(([name, value]) => {
@@ -398,7 +458,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           } else if (originalResponse.responseHeaders) {
             headers.push(...originalResponse.responseHeaders);
           }
-          
+
           await withTimeout(
             Fetch.fulfillRequest({
               requestId,
@@ -409,9 +469,9 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             timeoutMs,
             'Fetch.fulfillRequest timeout'
           );
-          
+
           responses?.delete(requestId);
-          
+
           return {
             success: true,
             message: `Response ${requestId} modified`,
@@ -476,34 +536,24 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           }
           
           await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          
-          // Use PERSISTENT client
-          const client = await withTimeout(
-            connector.getPersistentClient(tabId),
-            5000,
-            'Get persistent client timeout'
-          );
-          
-          const { Network, Fetch } = client;
-          
-          if (!Network || !Fetch) {
-            throw new Error('Network or Fetch domain not available');
-          }
-          
-          await withTimeout(Network.enable(), timeoutMs, 'Network.enable timeout');
-          await withTimeout(
-            Fetch.enable({
-              patterns: [{ urlPattern, requestStage: 'Request' as const }]
-            }),
-            timeoutMs,
-            'Fetch.enable timeout'
-          );
-          
+
           const effectiveTabId = tabId || 'default';
           if (!mockEndpoints.has(effectiveTabId)) {
             mockEndpoints.set(effectiveTabId, []);
           }
-          
+
+          // Prevent duplicate registrations of the same pattern+method.
+          const duplicate = mockEndpoints.get(effectiveTabId)!.some(
+            (m: any) => m.urlPattern === urlPattern && (m.method ?? '').toUpperCase() === (method ?? '').toUpperCase()
+          );
+          if (duplicate) {
+            return {
+              success: false,
+              error: `A mock endpoint already exists for pattern "${urlPattern}" (method ${method || 'any'})`,
+              suggestion: 'Use delete_mock_endpoint to remove it first'
+            };
+          }
+
           const mock = {
             urlPattern,
             responseBody,
@@ -513,87 +563,121 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             method,
             callCount: 0
           };
-          
           mockEndpoints.get(effectiveTabId)!.push(mock);
-          
-          // Register listener on persistent client
-          Fetch.requestPaused(async (params: any) => {
-            try {
-              const url = params.request.url;
-              const requestMethod = params.request.method;
-              
-              const matchingMock = mockEndpoints.get(effectiveTabId)?.find((m: any) => {
-                try {
-                  // Better pattern matching
-                  let urlMatch = false;
-                  
-                  // Convert glob pattern to regex
-                  const pattern = m.urlPattern
-                    .replace(/\./g, '\\.')  // Escape dots
-                    .replace(/\*/g, '.*')   // * becomes .*
-                    .replace(/\?/g, '.');   // ? becomes .
-                  
-                  const regex = new RegExp(`^${pattern}$`, 'i');
-                  urlMatch = regex.test(url);
-                  
-                  // Fallback: simple contains check
-                  if (!urlMatch && m.urlPattern.includes('*')) {
-                    const plainPart = m.urlPattern.replace(/\*/g, '');
-                    urlMatch = url.includes(plainPart);
-                  }
-                  
-                  const methodMatch = !m.method || m.method.toUpperCase() === requestMethod.toUpperCase();
-                  
-                  if (urlMatch && methodMatch) {
-                    console.error(`[Mock Matcher] ✅ Pattern "${m.urlPattern}" matched URL: ${url}`);
-                  }
-                  
-                  return urlMatch && methodMatch;
-                } catch (e) {
-                  console.error('[Mock Matcher] ❌ Pattern matching error:', e);
-                  return false;
-                }
-              });
-              
-              if (matchingMock) {
-                matchingMock.callCount++;
-                console.error(`[Mock Endpoint] 🎯 Intercepted ${requestMethod} ${url} -> Responding with mock data`);
-                
-                if (matchingMock.latency > 0) {
-                  await new Promise(resolve => setTimeout(resolve, matchingMock.latency));
-                }
-                
-                const responseHeaders: any[] = [
-                  { name: 'Content-Type', value: 'application/json' },
-                  ...Object.entries(matchingMock.headers || {}).map(([name, value]) => ({ name, value }))
-                ];
-                
-                await withTimeout(
-                  Fetch.fulfillRequest({
-                    requestId: params.requestId,
-                    responseCode: matchingMock.statusCode,
-                    responseHeaders,
-                    body: Buffer.from(matchingMock.responseBody).toString('base64')
-                  }),
-                  timeoutMs,
-                  'fulfillRequest timeout'
-                );
-              } else {
-                await withTimeout(
-                  Fetch.continueRequest({ requestId: params.requestId }),
-                  Math.min(timeoutMs, 5000),
-                  'continueRequest timeout'
-                );
-              }
-            } catch (e) {
-              console.error('[Mock Endpoint] Error processing request:', e);
-              try {
-                await Fetch.continueRequest({ requestId: params.requestId });
-              } catch (continueError) {
-                console.error('[Mock Endpoint] Failed to continue request:', continueError);
-              }
+
+          // ── ONE owning session + ONE listener per tab ─────────────────────
+          // Multiple mocks must not each Fetch.enable() their own pattern
+          // (every call REPLACES the previous pattern set on the session) nor
+          // stack requestPaused listeners. The single listener matches every
+          // paused request against the live mock list.
+          let session = mockSessions.get(effectiveTabId);
+          let client: any;
+          if (session) {
+            client = session.client;
+          } else {
+            client = await withTimeout(
+              connector.getPersistentClient(tabId),
+              5000,
+              'Get persistent client timeout'
+            );
+            const { Network, Fetch } = client;
+            if (!Network || !Fetch) {
+              throw new Error('Network or Fetch domain not available');
             }
-          });
+            await withTimeout(Network.enable(), timeoutMs, 'Network.enable timeout');
+
+            const unsubscribe = Fetch.requestPaused(async (params: any) => {
+              try {
+                const url = params.request.url;
+                const requestMethod = params.request.method;
+
+                const matchingMock = mockEndpoints.get(effectiveTabId)?.find((m: any) => {
+                  try {
+                    // Convert glob pattern to regex
+                    let urlMatch = false;
+                    const pattern = m.urlPattern
+                      .replace(/\./g, '\\.')  // Escape dots
+                      .replace(/\*/g, '.*')   // * becomes .*
+                      .replace(/\?/g, '.');   // ? becomes .
+
+                    const regex = new RegExp(`^${pattern}$`, 'i');
+                    urlMatch = regex.test(url);
+
+                    // Fallback: simple contains check
+                    if (!urlMatch && m.urlPattern.includes('*')) {
+                      const plainPart = m.urlPattern.replace(/\*/g, '');
+                      urlMatch = url.includes(plainPart);
+                    }
+
+                    const methodMatch = !m.method || m.method.toUpperCase() === requestMethod.toUpperCase();
+
+                    if (urlMatch && methodMatch) {
+                      console.error(`[Mock Matcher] ✅ Pattern "${m.urlPattern}" matched URL: ${url}`);
+                    }
+                    return urlMatch && methodMatch;
+                  } catch (e) {
+                    console.error('[Mock Matcher] ❌ Pattern matching error:', e);
+                    return false;
+                  }
+                });
+
+                if (matchingMock) {
+                  matchingMock.callCount++;
+                  console.error(`[Mock Endpoint] 🎯 Intercepted ${requestMethod} ${url} -> Responding with mock data`);
+
+                  if (matchingMock.latency > 0) {
+                    await new Promise(resolve => setTimeout(resolve, matchingMock.latency));
+                  }
+
+                  const responseHeaders: any[] = [
+                    { name: 'Content-Type', value: 'application/json' },
+                    ...Object.entries(matchingMock.headers || {}).map(([name, value]) => ({ name, value }))
+                  ];
+
+                  // The fulfill timeout must outlast the simulated latency or
+                  // slow mocks would time out and silently fall through.
+                  await withTimeout(
+                    Fetch.fulfillRequest({
+                      requestId: params.requestId,
+                      responseCode: matchingMock.statusCode,
+                      responseHeaders,
+                      body: Buffer.from(matchingMock.responseBody).toString('base64')
+                    }),
+                    Math.max(timeoutMs, (matchingMock.latency || 0) + 10000),
+                    'fulfillRequest timeout'
+                  );
+                } else {
+                  await withTimeout(
+                    Fetch.continueRequest({ requestId: params.requestId }),
+                    Math.min(timeoutMs, 5000),
+                    'continueRequest timeout'
+                  );
+                }
+              } catch (e) {
+                console.error('[Mock Endpoint] Error processing request:', e);
+                try {
+                  await Fetch.continueRequest({ requestId: params.requestId });
+                } catch (continueError) {
+                  console.error('[Mock Endpoint] Failed to continue request:', continueError);
+                }
+              }
+            });
+
+            session = { client, unsubscribe };
+            mockSessions.set(effectiveTabId, session);
+          }
+
+          // Refresh Fetch.enable with the FULL pattern set so every mock
+          // intercepts — not only the most recently created one.
+          const allPatterns: any[] = (mockEndpoints.get(effectiveTabId) || []).map((m: any) => ({
+            urlPattern: m.urlPattern,
+            requestStage: 'Request' as const
+          }));
+          await withTimeout(
+            client.Fetch.enable({ patterns: allPatterns }),
+            timeoutMs,
+            'Fetch.enable timeout'
+          );
           
           console.error(`✅ Mock endpoint ACTIVE for pattern: ${urlPattern}`);
           
@@ -655,15 +739,31 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         await connector.verifyConnection();
         const effectiveTabId = tabId || 'default';
         const mocks = mockEndpoints.get(effectiveTabId);
-        
+
         if (!mocks) {
           return { success: false, message: 'No mocks found' };
         }
-        
+
         const initialLength = mocks.length;
         const filtered = mocks.filter((m: any) => m.urlPattern !== urlPattern);
         mockEndpoints.set(effectiveTabId, filtered);
-        
+
+        // Keep the Fetch pattern set in sync with the live mock list:
+        // Fetch.enable REPLACES the patterns, so after a delete the remaining
+        // mocks must be re-registered or they would silently stop matching.
+        const session = mockSessions.get(effectiveTabId);
+        if (session && filtered.length > 0) {
+          const patterns: any[] = filtered.map((m: any) => ({
+            urlPattern: m.urlPattern,
+            requestStage: 'Request' as const
+          }));
+          try { await session.client.Fetch.enable({ patterns }); } catch (e) { console.error('[delete_mock_endpoint] re-enable failed:', (e as Error).message); }
+        } else if (session && filtered.length === 0) {
+          try { session.unsubscribe(); } catch { /* ignore */ }
+          try { await session.client.Fetch.disable(); } catch { /* ignore */ }
+          mockSessions.delete(effectiveTabId);
+        }
+
         return {
           success: true,
           message: `Deleted ${initialLength - filtered.length} mock(s)`,
@@ -674,7 +774,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'clear_all_mocks',
-      description: 'Clear all mock endpoints and close persistent listeners',
+      description: 'Clear all mock endpoints and detach the interceptor listener.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
@@ -683,18 +783,21 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         const effectiveTabId = tabId || 'default';
         const count = mockEndpoints.get(effectiveTabId)?.length || 0;
         mockEndpoints.delete(effectiveTabId);
-        
-        // Close persistent client
-        try {
-          await connector.closePersistentClient(tabId);
-          console.error(`✅ Mock endpoints CLEARED and listener closed`);
-        } catch (e) {
-          console.error('⚠️ Error closing persistent client:', e);
+
+        // Unsubscribe + Fetch.disable on the OWNING session. Do NOT close the
+        // shared persistent client — console capture and other features may
+        // still be attached to it.
+        const session = mockSessions.get(effectiveTabId);
+        if (session) {
+          try { session.unsubscribe(); } catch { /* ignore */ }
+          try { await session.client.Fetch.disable(); } catch (e) { console.error('⚠️ Error disabling Fetch:', (e as Error).message); }
+          mockSessions.delete(effectiveTabId);
+          console.error(`✅ Mock endpoints CLEARED and listener detached`);
         }
-        
+
         return {
           success: true,
-          message: `Cleared ${count} mock endpoint(s) and closed listener`
+          message: `Cleared ${count} mock endpoint(s) and detached listener`
         };
       }
     },
@@ -738,8 +841,19 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             websocketMessages.set(effectiveTabId, []);
           }
           
-          // Register listeners on persistent client
-          Network.webSocketCreated((params: any) => {
+          // Tear down a previous WebSocket interception for this tab so
+          // listeners never stack across re-enables.
+          const previousWs = websocketSessions.get(effectiveTabId);
+          if (previousWs) {
+            try { previousWs.unsubscribe(); } catch { /* ignore */ }
+            websocketSessions.delete(effectiveTabId);
+          }
+
+          // Register listeners on the owning persistent client; each returns
+          // an unsubscribe handle so disable can detach them.
+          const unsubscribers: Array<() => void> = [];
+
+          const unsubCreated = Network.webSocketCreated((params: any) => {
             try {
               const conns = websocketConnections.get(effectiveTabId);
               if (conns) {
@@ -749,13 +863,15 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
                   initiator: params.initiator,
                   timestamp: Date.now()
                 });
+                if (conns.length > MAX_WS_CONNECTIONS) conns.splice(0, conns.length - MAX_WS_CONNECTIONS);
               }
             } catch (e) {
               console.error('[WebSocket] Error storing connection:', e);
             }
           });
-          
-          Network.webSocketFrameSent((params: any) => {
+          unsubscribers.push(unsubCreated);
+
+          const unsubSent = Network.webSocketFrameSent((params: any) => {
             try {
               const messages = websocketMessages.get(effectiveTabId);
               if (messages) {
@@ -767,13 +883,15 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
                   mask: params.response?.mask,
                   payloadData: params.response?.payloadData
                 });
+                if (messages.length > MAX_WS_MESSAGES) messages.splice(0, messages.length - MAX_WS_MESSAGES);
               }
             } catch (e) {
               console.error('[WebSocket] Error storing sent message:', e);
             }
           });
-          
-          Network.webSocketFrameReceived((params: any) => {
+          unsubscribers.push(unsubSent);
+
+          const unsubReceived = Network.webSocketFrameReceived((params: any) => {
             try {
               const messages = websocketMessages.get(effectiveTabId);
               if (messages) {
@@ -785,13 +903,15 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
                   mask: params.response?.mask,
                   payloadData: params.response?.payloadData
                 });
+                if (messages.length > MAX_WS_MESSAGES) messages.splice(0, messages.length - MAX_WS_MESSAGES);
               }
             } catch (e) {
               console.error('[WebSocket] Error storing received message:', e);
             }
           });
-          
-          Network.webSocketClosed((params: any) => {
+          unsubscribers.push(unsubReceived);
+
+          const unsubClosed = Network.webSocketClosed((params: any) => {
             try {
               const conns = websocketConnections.get(effectiveTabId);
               if (conns) {
@@ -804,6 +924,16 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             } catch (e) {
               console.error('[WebSocket] Error marking connection closed:', e);
             }
+          });
+          unsubscribers.push(unsubClosed);
+
+          websocketSessions.set(effectiveTabId, {
+            client,
+            unsubscribe: () => {
+              for (const unsub of unsubscribers) {
+                try { unsub(); } catch { /* ignore */ }
+              }
+            },
           });
           
           console.error(`✅ WebSocket interceptor ACTIVE and listening`);
@@ -888,82 +1018,92 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
 
     {
       name: 'send_websocket_message',
-      description: 'Send a fake WebSocket message (inject into the stream)',
+      description:
+        'Send a message over a WebSocket opened by the page. CDP cannot push frames into an ALREADY-OPEN ' +
+        'WebSocket, so this hooks WebSocket construction in the page and, when a (matching) connection opens ' +
+        'within the wait window, sends your message over it. success:true means the message was actually sent.',
       inputSchema: z.object({
-        requestId: z.string().describe('WebSocket connection ID'),
+        requestId: z.string().optional().describe('Optional filter: only send if the new WebSocket URL contains this value'),
         message: z.string().describe('Message to send'),
+        waitMs: z.number().default(3000).describe('Max ms to wait for the page to open a matching WebSocket'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ requestId, message, tabId }: any) => {
+      handler: async ({ requestId, message, waitMs = 3000, tabId }: any) => {
         try {
           if (!message || message.trim() === '') {
-            return {
-              success: false,
-              error: 'message cannot be empty'
-            };
+            return { success: false, error: 'message cannot be empty' };
           }
-          
+
           await withTimeout(connector.verifyConnection(), 3000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 3000, 'Get client timeout');
+          const client = await withTimeout(connector.getPersistentClient(tabId), 3000, 'Get client timeout');
           const { Runtime } = client;
-          
+
           if (!Runtime) {
             throw new Error('Runtime domain not available');
           }
-          
+
           await withTimeout(Runtime.enable(), 3000, 'Runtime.enable timeout');
-          
-          // Escape message for JavaScript injection
-          const escapedMessage = message.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-          
-          const script = `
-            (function() {
-              // Find the WebSocket by inspecting global WebSocket instances
-              // This is a workaround since CDP doesn't expose WS instances
-              const originalSend = WebSocket.prototype.send;
-              let foundWS = null;
-              
-              WebSocket.prototype.send = function(...args) {
-                foundWS = this;
-                return originalSend.apply(this, args);
+
+          const payload = JSON.stringify(message);
+          const script = `(async function() {
+            const message = ${payload};
+            const targetFrag = ${JSON.stringify(requestId || '')};
+            const waitMs = ${Math.min(Math.max(waitMs || 3000, 0), 10000)};
+
+            const OrigWS = window.WebSocket;
+            if (typeof OrigWS !== 'function') return { sent: false, reason: 'no WebSocket API in page' };
+
+            return await new Promise((resolve) => {
+              let sent = false;
+              const finish = (reason) => {
+                window.WebSocket = OrigWS;
+                clearTimeout(timer);
+                resolve({ sent, reason });
               };
-              
-              // Trigger to get reference
-              setTimeout(() => {
-                if (foundWS && foundWS.readyState === WebSocket.OPEN) {
-                  try {
-                    foundWS.send('${escapedMessage}');
-                    return 'success';
-                  } catch (e) {
-                    return 'error: ' + e.message;
-                  }
-                } else {
-                  return 'error: WebSocket not found or not open';
+              const timer = setTimeout(() => finish(sent ? 'sent' : 'no matching WebSocket opened in time'), waitMs);
+
+              const PatchedWS = function(...args) {
+                const ws = new OrigWS(...args);
+                const url = String(args[0] || '');
+                if (!targetFrag || url.includes(targetFrag)) {
+                  ws.addEventListener('open', () => {
+                    try {
+                      if (!sent) { ws.send(message); sent = true; }
+                    } catch (e) { /* send failed */ }
+                  });
                 }
-              }, 100);
-              
-              return 'Message injection attempted';
-            })();
-          `;
-          
+                return ws;
+              };
+              PatchedWS.prototype = OrigWS.prototype;
+              PatchedWS.CONNECTING = OrigWS.CONNECTING;
+              PatchedWS.OPEN = OrigWS.OPEN;
+              PatchedWS.CLOSING = OrigWS.CLOSING;
+              PatchedWS.CLOSED = OrigWS.CLOSED;
+              window.WebSocket = PatchedWS;
+            });
+          })()`;
+
           const result: any = await withTimeout(
-            Runtime.evaluate({ expression: script }),
-            5000,
-            'Runtime.evaluate timeout'
+            Runtime.evaluate({ expression: script, awaitPromise: true, returnByValue: true }),
+            Math.min(waitMs + 5000, 15000),
+            'WebSocket send timed out'
           );
-          
+
+          const value = result.result?.value;
+          const ok = !!(value && value.sent === true);
+
           return {
-            success: true,
-            message: 'WebSocket message injection attempted',
-            note: 'CDP limitation: Direct WS injection requires JavaScript workaround',
-            result: result.result?.value
+            success: ok,
+            message: ok
+              ? 'WebSocket message sent'
+              : `Message NOT sent: ${value?.reason || 'unknown'}. CDP cannot push frames into an already-open WebSocket — the page must open a new (matching) connection while this call is waiting.`,
+            ...(ok ? { sent: true } : { reason: value?.reason })
           };
         } catch (error: any) {
           return {
             success: false,
             error: error.message || 'Failed to send WebSocket message',
-            details: error.stack,
-            suggestion: 'Ensure WebSocket connection is active and page has a WebSocket instance'
+            details: error.stack
           };
         }
       }
@@ -978,9 +1118,18 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       handler: async ({ tabId }: any) => {
         await connector.verifyConnection();
         const effectiveTabId = tabId || 'default';
+
+        // Detach the listeners on the OWNING session (they were registered on
+        // it) and stop Network events for WebSockets.
+        const session = websocketSessions.get(effectiveTabId);
+        if (session) {
+          try { session.unsubscribe(); } catch { /* ignore */ }
+          try { await session.client.Network.disable(); } catch { /* ignore */ }
+          websocketSessions.delete(effectiveTabId);
+        }
         websocketConnections.delete(effectiveTabId);
         websocketMessages.delete(effectiveTabId);
-        
+
         return {
           success: true,
           message: 'WebSocket interception disabled'
@@ -1000,7 +1149,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       }),
       handler: async ({ tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Network, Page } = client;
         
         await Network.enable();
@@ -1015,22 +1164,45 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
         
         harRecordings.set(effectiveTabId, recording);
         
+        // Track monotonic start times so per-request `time` uses real deltas
+        // (Network.timestamp is a monotonic clock, NOT wall time).
+        const startTimes = new Map<string, number>();
+
         Network.requestWillBeSent((params: any) => {
+          if (recording.entries.length >= MAX_HAR_ENTRIES) return;
+          startTimes.set(params.requestId, params.timestamp);
+
+          let queryString: Array<{ name: string; value: string }> = [];
+          try {
+            const parsed = new URL(params.request.url);
+            queryString = [...parsed.searchParams.entries()].map(([name, value]) => ({ name, value }));
+          } catch { /* non-http URL (data:, chrome:, …) */ }
+
           const entry: any = {
             requestId: params.requestId,
-            startedDateTime: new Date(params.timestamp * 1000).toISOString(),
-            time: 0,
+            startedDateTime: new Date((params.wallTime ?? Date.now() / 1000) * 1000).toISOString(),
+            time: -1,
             request: {
               method: params.request.method,
               url: params.request.url,
               httpVersion: 'HTTP/1.1',
               headers: Object.entries(params.request.headers || {}).map(([name, value]) => ({ name, value })),
-              queryString: [],
+              queryString,
               cookies: [],
               headersSize: -1,
               bodySize: params.request.postData ? params.request.postData.length : 0
             },
-            response: {},
+            response: {
+              status: 0,
+              statusText: '',
+              httpVersion: '',
+              headers: [],
+              cookies: [],
+              content: { size: 0, mimeType: '' },
+              redirectURL: '',
+              headersSize: -1,
+              bodySize: -1
+            },
             cache: {},
             timings: {
               blocked: -1,
@@ -1042,10 +1214,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
               ssl: -1
             }
           };
-          
+
           recording.entries.push(entry);
         });
-        
+
         Network.responseReceived((params: any) => {
           const entry = recording.entries.find((e: any) => e.requestId === params.requestId);
           if (entry) {
@@ -1059,18 +1231,25 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
                 size: 0,
                 mimeType: params.response.mimeType || 'application/octet-stream'
               },
-              redirectURL: '',
+              redirectURL: params.response.headers?.['Location'] ?? '',
               headersSize: -1,
               bodySize: -1
             };
           }
         });
-        
+
         Network.loadingFinished((params: any) => {
           const entry = recording.entries.find((e: any) => e.requestId === params.requestId);
-          if (entry) {
-            entry.time = (params.timestamp * 1000) - new Date(entry.startedDateTime).getTime();
+          if (!entry) return;
+          const start = startTimes.get(params.requestId);
+          if (typeof start === 'number') {
+            entry.time = Math.max(0, (params.timestamp - start) * 1000);
           }
+          if (typeof params.encodedDataLength === 'number' && entry.response?.content) {
+            entry.response.content.size = params.encodedDataLength;
+            entry.response.bodySize = params.encodedDataLength;
+          }
+          startTimes.delete(params.requestId);
         });
         
         return {
@@ -1101,34 +1280,42 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             version: '1.2',
             creator: {
               name: 'Custom Chrome MCP',
-              version: '1.0.9'
+              version: getPackageVersion()
             },
             pages: recording.pages,
             entries: recording.entries
           }
         };
-        
+
+        // Park the finished recording so export_har_file can still write it
+        // after stopping (the documented stop → export flow).
+        lastCompletedHar.set(effectiveTabId, { pages: recording.pages || [], entries: recording.entries || [] });
+
         harRecordings.delete(effectiveTabId);
-        
+
         return {
           success: true,
           har,
           entriesCount: recording.entries.length,
-          duration: Date.now() - recording.startTime
+          duration: Date.now() - recording.startTime,
+          nextStep: 'Call export_har_file to save this recording to disk'
         };
       }
     },
 
     {
       name: 'export_har_file',
-      description: 'Save HAR recording to disk as a .har file. Must call stop_har_recording first.',
+      description:
+        'Save HAR data to disk as a .har file. Works whether a recording is still ACTIVE (exports the live snapshot) ' +
+        'or was already stopped with stop_har_recording (exports the last completed recording). ' +
+        'Output is sandboxed: the file lands inside the working directory or the temp folder only.',
       inputSchema: z.object({
         filename: z.string().describe('Filename to save HAR (e.g., recording.har)'),
-        outputDir: z.string().optional().describe('Output directory (default: current directory)'),
+        outputDir: z.string().optional().describe('Output directory (optional; must be inside the working directory or temp folder)'),
         timeoutMs: z.number().default(60000).optional().describe('File write timeout in milliseconds (default: 60000)'),
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
-      handler: async ({ filename, outputDir = '.', timeoutMs = 60000, tabId }: any) => {
+      handler: async ({ filename, outputDir, timeoutMs = 60000, tabId }: any) => {
         try {
           // Validate filename
           if (!filename || filename.trim() === '') {
@@ -1137,64 +1324,61 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
               error: 'filename is required'
             };
           }
-          
-          if (!filename.endsWith('.har')) {
-            filename += '.har';
-          }
-          
+
           await withTimeout(connector.verifyConnection(), 3000, 'Connection timeout');
           const effectiveTabId = tabId || 'default';
+
+          // Accept an ACTIVE recording (live snapshot) OR the most recently
+          // completed one (after stop_har_recording).
           const recording = harRecordings.get(effectiveTabId);
-          
-          if (!recording) {
+          const completed = lastCompletedHar.get(effectiveTabId);
+          const source: { pages: any[]; entries: any[] } = recording
+            ? { pages: recording.pages || [], entries: recording.entries || [] }
+            : completed;
+          const fromActive = !!recording;
+
+          if (!source || source.entries.length === 0) {
             return {
               success: false,
-              error: 'No active HAR recording to export',
-              suggestion: 'Use start_har_recording first before exporting'
+              error: 'No HAR data to export',
+              suggestion: 'Call start_har_recording, trigger traffic, then stop_har_recording — then export.'
             };
           }
-          
+
           const har = {
             log: {
               version: '1.2',
               creator: {
                 name: 'Custom Chrome MCP',
-                version: '1.0.10'
+                version: getPackageVersion()
               },
-              pages: recording.pages || [],
-              entries: recording.entries || []
+              pages: source.pages,
+              entries: source.entries
             }
           };
-          
-          // Ensure directory exists
-          try {
-            await fs.mkdir(outputDir, { recursive: true });
-          } catch (mkdirError: any) {
-            if (mkdirError.code !== 'EEXIST') {
-              throw new Error(`Failed to create directory: ${mkdirError.message}`);
-            }
-          }
-          
-          const filepath = path.join(outputDir, filename);
-          
+
+          const safeName = filename.toLowerCase().endsWith('.har') ? filename : `${filename}.har`;
+          const { filePath } = resolveOutputPath(outputDir, safeName, 'chrome-mcp-har');
+
           await withTimeout(
-            fs.writeFile(filepath, JSON.stringify(har, null, 2), 'utf-8'),
+            fs.writeFile(filePath, JSON.stringify(har, null, 2), 'utf-8'),
             timeoutMs,
             'File write timeout'
           );
-          
+
           return {
             success: true,
-            message: `HAR file exported to ${filepath}`,
-            filepath,
-            entriesCount: recording.entries?.length || 0
+            message: `HAR file exported to ${filePath}`,
+            filepath: filePath,
+            entriesCount: source.entries.length,
+            fromActiveRecording: fromActive
           };
         } catch (error: any) {
           return {
             success: false,
             error: error.message || 'Failed to export HAR file',
             details: error.stack,
-            suggestion: 'Check directory permissions and disk space'
+            suggestion: 'Check the filename/path are allowed (working directory or temp folder) and disk is writable'
           };
         }
       }
@@ -1224,7 +1408,9 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       }),
       handler: async ({ name, urlPattern, method, resourceType, statusCodeMin, statusCodeMax, minSize, maxSize, minDuration, contentType, action = 'log', delayMs, tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        // Persistent session: the pattern stays live until disabled, so it
+        // must own its listeners on the session that enabled Fetch.
+        const client = await connector.getPersistentClient(tabId);
         const { Network, Fetch } = client;
         
         await Network.enable();
@@ -1266,9 +1452,10 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           
           let matches = true;
           
-          // URL pattern matching
+          // URL pattern matching (glob→regex; dots escaped so "." matches a
+          // literal dot, not any character)
           if (urlPattern) {
-            const regex = new RegExp(urlPattern.replace(/\*/g, '.*'));
+            const regex = new RegExp(urlPattern.replace(/\./g, '\\.').replace(/\*/g, '.*'));
             if (!regex.test(url)) matches = false;
           }
           
@@ -1287,7 +1474,9 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             // For 'log' action, just increment counter
             if (action === 'log') {
               pattern.matchCount++;
-              console.log(`[Pattern: ${name}] Matched request:`, {
+              // NOTE: console.error — this code runs inside the MCP stdio
+              // process and console.log would corrupt the JSON-RPC stream.
+              console.error(`[Pattern: ${name}] Matched request:`, {
                 url,
                 status,
                 mimeType,
@@ -1310,25 +1499,31 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
             });
             
             Fetch.requestPaused(async (params: any) => {
-              let matches = true;
-              
-              if (method && params.request.method !== method) matches = false;
-              if (resourceType && params.resourceType !== resourceType) matches = false;
-              
-              if (matches && action === 'block') {
-                await Fetch.failRequest({
-                  requestId: params.requestId,
-                  errorReason: 'BlockedByClient'
-                });
-                pattern.matchCount++;
-              } else if (matches && action === 'delay') {
-                if (delayMs) {
-                  await new Promise(resolve => setTimeout(resolve, delayMs));
+              try {
+                let matches = true;
+
+                if (method && params.request.method !== method) matches = false;
+                if (resourceType && params.resourceType !== resourceType) matches = false;
+
+                if (matches && action === 'block') {
+                  await Fetch.failRequest({
+                    requestId: params.requestId,
+                    errorReason: 'BlockedByClient'
+                  });
+                  pattern.matchCount++;
+                } else if (matches && action === 'delay') {
+                  if (delayMs) {
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                  }
+                  await Fetch.continueRequest({ requestId: params.requestId });
+                  pattern.matchCount++;
+                } else {
+                  await Fetch.continueRequest({ requestId: params.requestId });
                 }
-                await Fetch.continueRequest({ requestId: params.requestId });
-                pattern.matchCount++;
-              } else {
-                await Fetch.continueRequest({ requestId: params.requestId });
+              } catch (e) {
+                console.error(`[Pattern: ${name}] requestPaused error:`, e);
+                // Never leave a request paused because bookkeeping threw.
+                await Fetch.continueRequest({ requestId: params.requestId }).catch(() => {});
               }
             });
           }
@@ -1380,7 +1575,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           }
           
           await withTimeout(connector.verifyConnection(), 5000, 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), 5000, 'Get client timeout');
+          const client = await withTimeout(connector.getPersistentClient(tabId), 5000, 'Get client timeout');
           const { Page } = client;
           
           if (!Page) {
@@ -1474,7 +1669,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
           }
           
           await withTimeout(connector.verifyConnection(), Math.min(timeoutMs, 5000), 'Connection timeout');
-          const client = await withTimeout(connector.getTabClient(tabId), Math.min(timeoutMs, 5000), 'Get client timeout');
+          const client = await withTimeout(connector.getPersistentClient(tabId), Math.min(timeoutMs, 5000), 'Get client timeout');
           const { Page } = client;
           
           if (!Page) {
@@ -1576,7 +1771,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       }),
       handler: async ({ identifier, tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Page } = client;
         
         await Page.removeScriptToEvaluateOnNewDocument({
@@ -1605,7 +1800,7 @@ export function createAdvancedNetworkTools(connector: ChromeConnector) {
       }),
       handler: async ({ tabId }: any) => {
         await connector.verifyConnection();
-        const client = await connector.getTabClient(tabId);
+        const client = await connector.getPersistentClient(tabId);
         const { Page } = client;
         
         const effectiveTabId = tabId || 'default';

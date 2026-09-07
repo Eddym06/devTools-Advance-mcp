@@ -5,14 +5,29 @@
  */
 
 import CDP from 'chrome-remote-interface';
-import { chromium, type Browser, type BrowserContext } from 'playwright';
+import { chromium, type BrowserContext } from 'playwright';
 import { spawn, type ChildProcess, exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { promisify } from 'util';
 
+import { withTimeout } from './utils/helpers.js';
+
 const execAsync = promisify(exec);
+
+/**
+ * CDP WebSocket Origin allowlist (replaces the old `--remote-allow-origins=*`).
+ *
+ * Why: `--remote-allow-origins=*` turns the debug port into an open remote-
+ * control channel — ANY webpage open in ANY browser on this machine can open
+ * ws://127.0.0.1:<port> and drive the browser (read HttpOnly cookies, run
+ * JS in every tab, navigate to file://, screenshot…). The local MCP server
+ * connects via chrome-remote-interface, which sends NO Origin header, so it
+ * is unaffected by this list; only browser/web-content handshakes carry an
+ * Origin and those are now restricted to DevTools/localhost.
+ */
+const CDP_ALLOWED_ORIGINS = 'http://localhost,http://127.0.0.1,devtools://devtools';
 
 export interface ChromeConnection {
   client: any;
@@ -45,9 +60,27 @@ export class ChromeConnector {
   private chromeProcess: ChildProcess | null = null;
   private persistentClients: Map<string, any> = new Map(); // Persistent clients for interceptors
   private stealthApplied = false; // Applied once per connection session
+  private cleaningUp = false; // Re-entrancy guard for process-death cleanup
+  /** Callbacks invoked whenever the CDP connection is torn down (disconnect / process death). */
+  private disconnectHandlers = new Set<() => void>();
 
-  constructor(port: number = 9222) {
-    this.port = port;
+  constructor(port?: number) {
+    this.port = port ?? 9222;
+  }
+
+  /**
+   * Register a callback that runs when the browser session is torn down
+   * (explicit disconnect OR Chrome process death). Used to reset module-level
+   * capture/interception state so a fresh Chrome session does not inherit
+   * stale buffers or listeners.
+   */
+  onDisconnect(handler: () => void): void {
+    this.disconnectHandlers.add(handler);
+  }
+
+  private notifyDisconnect(): void {
+    for (const handler of this.disconnectHandlers) handler();
+    this.disconnectHandlers.clear();
   }
 
   /**
@@ -190,6 +223,9 @@ export class ChromeConnector {
    * This is more robust for persistent profiles than Playwright's launcher
    */
   async launchWithProfile(options: LaunchOptions = {}): Promise<void> {
+    // Fresh launch attempt — allow a previous process-death cleanup to run again.
+    this.cleaningUp = false;
+
     // 1. Check connections
     if (this.connection?.connected) {
       if (!options.force) {
@@ -257,7 +293,7 @@ export class ChromeConnector {
       `--remote-debugging-port=${this.port}`,
       `--user-data-dir=${finalUserDataDir}`,
       `--profile-directory=${profileDirectory}`,
-      '--remote-allow-origins=*',
+      `--remote-allow-origins=${CDP_ALLOWED_ORIGINS}`,
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-infobars',
@@ -364,7 +400,9 @@ export class ChromeConnector {
       let portCheckCmd: string;
 
       if (platform === 'win32') {
-        portCheckCmd = `powershell -Command "netstat -ano | Select-String ':${this.port}' | Select-String 'LISTENING'"`;
+        // \s after the port avoids false positives from ports that merely
+        // CONTAIN ours (e.g. 9222 must not match 92220).
+        portCheckCmd = `powershell -Command "netstat -ano | Select-String ':${this.port}\\s' | Select-String 'LISTENING'"`;
       } else {
         portCheckCmd = `lsof -i :${this.port} | grep LISTEN || netstat -an | grep ${this.port}`;
       }
@@ -456,67 +494,154 @@ export class ChromeConnector {
   }
 
   /**
-   * Handle Chrome process death - cleanup internal state
+   * Handle Chrome process death - cleanup internal state.
+   * Both the 'exit' and 'error' child-process events route here; the
+   * re-entrancy guard makes sure the cleanup (and the disconnect
+   * notifications) only ever run once.
    */
   private handleProcessDeath(): void {
+    if (this.cleaningUp) return;
+    this.cleaningUp = true;
     console.error('🧹 Cleaning up internal state due to Chrome process death...');
 
-    // Clear connection
-    if (this.connection) {
-      try {
-        this.connection.client.close().catch(() => { });
-      } catch (e) { }
-      this.connection = null;
+    try {
+      // Clear connection
+      if (this.connection) {
+        try {
+          this.connection.client.close().catch(() => { });
+        } catch (e) { }
+        this.connection = null;
+      }
+
+      // Clear browser context
+      if (this.browserContext) {
+        try {
+          const browser = this.browserContext.browser();
+          if (browser) {
+            browser.close().catch(() => { });
+          }
+        } catch (e) { }
+        this.browserContext = null;
+      }
+
+      // Close interceptor/console persistent clients so no listener keeps
+      // firing against a dead browser.
+      this.closeAllPersistentClients();
+
+      // Clear process reference
+      this.chromeProcess = null;
+      this.currentTabId = null;
+      this.stealthApplied = false;
+
+      console.error('✅ Internal state cleared. Ready for new launch.');
+    } finally {
+      this.notifyDisconnect();
     }
-
-    // Clear browser context
-    if (this.browserContext) {
-      try {
-        const browser = this.browserContext.browser();
-        if (browser) {
-          browser.close().catch(() => { });
-        }
-      } catch (e) { }
-      this.browserContext = null;
-    }
-
-    // Clear process reference
-    this.chromeProcess = null;
-    this.currentTabId = null;
-    this.stealthApplied = false;
-
-    console.error('✅ Internal state cleared. Ready for new launch.');
   }
 
   /**
-   * Disconnect from Chrome and close Playwright browser
+   * Close every persistent (interceptor/console) CDP client and drop the map.
    */
-  async disconnect(): Promise<void> {
+  closeAllPersistentClients(): void {
+    for (const [, client] of this.persistentClients) {
+      try {
+        client.close().catch(() => { });
+      } catch (e) { /* already closed */ }
+    }
+    this.persistentClients.clear();
+  }
+
+  /**
+   * Best-effort kill of the Chrome process this server spawned (and its
+   * children) — used by close_browser and on graceful shutdown.
+   */
+  private async killChromeProcessTree(): Promise<void> {
+    const proc = this.chromeProcess;
+    if (!proc) return;
+    const pid = proc.pid;
+    try {
+      if (os.platform() === 'win32' && pid) {
+        await execAsync(`taskkill /pid ${pid} /T /F`);
+      } else if (pid) {
+        try {
+          process.kill(-pid, 'SIGKILL'); // negative pid = process group
+        } catch {
+          proc.kill('SIGKILL');
+        }
+      } else {
+        proc.kill('SIGKILL');
+      }
+    } catch (e) {
+      console.error('⚠️ Could not kill Chrome process tree:', (e as Error).message);
+      try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+    }
+    this.chromeProcess = null;
+  }
+
+  /**
+   * Disconnect from Chrome and close the Playwright browser.
+   *
+   * @param opts.killBrowser - If true AND this server spawned the Chrome
+   * process, the process tree is killed too (used by close_browser and on
+   * server shutdown). Plain disconnect() leaves a user-launched browser alone.
+   */
+  async disconnect(opts: { killBrowser?: boolean } = {}): Promise<void> {
+    const { killBrowser = false } = opts;
+    if (this.cleaningUp) {
+      // A process-death cleanup is already running; let it finish the teardown.
+      return;
+    }
+
+    if (killBrowser) {
+      await this.killChromeProcessTree();
+    }
+
     if (this.connection?.client) {
-      await this.connection.client.close();
+      try {
+        await withTimeout(this.connection.client.close(), 5000, 'CDP client close timed out');
+      } catch (e) {
+        console.error('⚠️ Error closing CDP client:', (e as Error).message);
+      }
       this.connection = null;
       console.error('Disconnected from Chrome CDP');
     }
 
     if (this.browserContext) {
-      await this.browserContext.close();
+      try {
+        await this.browserContext.close();
+      } catch (e) { /* ignore */ }
       this.browserContext = null;
       console.error('Closed Playwright context');
     }
 
-    if (this.chromeProcess) {
-      // optional: kill process? usually we just disconnect
-      // this.chromeProcess.kill(); 
-      this.chromeProcess = null;
-    }
+    this.closeAllPersistentClients();
+    this.chromeProcess = null;
+    this.currentTabId = null;
+    this.stealthApplied = false;
+
+    this.notifyDisconnect();
   }
 
   /**
-   * Connect to existing Chrome instance
+   * Full teardown used on server shutdown (SIGINT/SIGTERM): kills a Chrome
+   * that this server launched (avoids orphan browsers with open debug ports
+   * piling up between restarts) and releases every CDP/Playwright resource.
+   */
+  async shutdown(): Promise<void> {
+    await this.disconnect({ killBrowser: true });
+  }
+
+  /**
+   * Connect to existing Chrome instance.
+   * Closes any previous live client first so repeated connects never leak.
    */
   async connect(): Promise<void> {
     try {
       const client = await CDP({ port: this.port });
+
+      if (this.connection?.client && this.connection.client !== client) {
+        try { this.connection.client.close().catch(() => { }); } catch (e) { /* ignore */ }
+      }
 
       this.connection = {
         client,
@@ -696,7 +821,7 @@ export class ChromeConnector {
     // Already connected → verify still alive
     if (this.connection?.connected) {
       try {
-        await CDP.List({ port: this.port });
+        await withTimeout(CDP.List({ port: this.port }), 5000, 'CDP liveness check timed out');
         return;
       } catch {
         console.error('[Lazy-init] Connection dead, cleaning up...');
@@ -755,27 +880,43 @@ export class ChromeConnector {
   }
 
   /**
-   * Build a comprehensive browser stealth script.
-   * Covers: webdriver flag, plugins, permissions API, navigator hints,
-   * canvas fingerprint noise, WebGL vendor/renderer spoof, audio noise.
-   * The seed is random per-session so fingerprints differ between sessions
-   * but remain stable within a single session.
+   * Build the stealth script.
+   * Covers: webdriver=false, realistic plugin list (only when empty),
+   * chrome.runtime stub, and session-stable canvas/audio fingerprint noise.
+   * Deliberately does NOT spoof platform/UA/GPU values — inconsistent
+   * spoofs are more detectable than the real environment of a genuine
+   * user profile. The seed is random per session (persisted per-origin) so
+   * fingerprints differ between sessions but stay stable within one.
    */
   private buildStealthScript(): string {
     return `(function() {
-  // Session-unique seed – same site gets consistent pixels within a session,
-  // different fingerprint in every new session.
-  const _seed = Math.random() * 1e10;
+  // Session-unique seed: persisted per-origin (sessionStorage survives
+  // same-origin navigations within the tab), so a site sees a STABLE
+  // fingerprint during the whole session and a fresh one in the next session.
+  let _seed = Math.random() * 1e10;
+  try {
+    const _stored = window.sessionStorage.getItem('__mcp_fp_seed');
+    if (_stored !== null && !Number.isNaN(Number(_stored))) {
+      _seed = Number(_stored);
+    } else {
+      window.sessionStorage.setItem('__mcp_fp_seed', String(_seed));
+    }
+  } catch(e) {}
 
   // ── 1. Hide webdriver flag ──────────────────────────────────────────────
   try {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    // A real (non-automated) Chrome reports 'false', not 'undefined'.
+    Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
   } catch(e) {}
 
   // ── 2. Realistic plugin list ────────────────────────────────────────────
   try {
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => [
+    // Only fake a plugin list when the real one is empty (automation signal);
+    // a normal user profile already has Chrome PDF/Native Client plugins.
+    if (navigator.plugins.length === 0) {
+      Object.defineProperty(navigator, 'plugins', {
+        configurable: true,
+        get: () => [
         { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1,
           0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' } },
         { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: 'Portable Document Format', length: 1,
@@ -783,49 +924,23 @@ export class ChromeConnector {
         { name: 'Native Client', filename: 'internal-nacl-plugin', description: '', length: 2,
           0: { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' },
           1: { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' } }
-      ]
-    });
+        ]
+      });
+    }
   } catch(e) {}
 
-  // ── 3. Permissions API ──────────────────────────────────────────────────
-  try {
-    const _origQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (params) =>
-      params.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
-        : _origQuery(params);
-  } catch(e) {}
-
-  // ── 4. chrome.runtime stub ──────────────────────────────────────────────
+  // ── 3. chrome.runtime stub (only when absent) ───────────────────────────
   try {
     if (!window.chrome) window.chrome = {};
     if (!window.chrome.runtime) window.chrome.runtime = {};
   } catch(e) {}
 
-  // ── 5. Navigator / hardware hints ───────────────────────────────────────
-  [
-    ['languages',          () => ['en-US', 'en']],
-    ['platform',           () => 'Win32'],
-    ['hardwareConcurrency',() => 8],
-    ['deviceMemory',       () => 8],
-  ].forEach(([k, v]) => {
-    try { Object.defineProperty(navigator, k, { get: v, configurable: true }); } catch(e) {}
-  });
-
-  // ── 6. Screen ───────────────────────────────────────────────────────────
-  try { Object.defineProperty(screen, 'availWidth',  { get: () => screen.width,        configurable: true }); } catch(e) {}
-  try { Object.defineProperty(screen, 'availHeight', { get: () => screen.height - 40,  configurable: true }); } catch(e) {}
-
-  // ── 7. toString leak fix ────────────────────────────────────────────────
-  try {
-    const _origTS = Function.prototype.toString;
-    Function.prototype.toString = function() {
-      if (this === window.navigator.permissions.query) {
-        return 'function query() { [native code] }';
-      }
-      return _origTS.call(this);
-    };
-  } catch(e) {}
+  // NOTE: navigator.platform / languages / hardwareConcurrency / deviceMemory
+  // / screen / WebGL vendor overrides were REMOVED on purpose — hard-coding
+  // 'Win32', 8 cores or "Mesa DRI Intel" while the real machine is a Mac or
+  // an NVIDIA GPU is itself a fingerprint mismatch that anti-bot systems flag
+  // instantly. This server drives a real Chrome with the user's real profile,
+  // so the environment's real values are the most believable ones.
 
   // ── 8. Canvas fingerprint noise ─────────────────────────────────────────
   // Applies imperceptible +/-1 pixel noise derived from the session seed.
@@ -864,35 +979,10 @@ export class ChromeConnector {
     HTMLCanvasElement.prototype.toBlob = function(cb, type, q) {
       return _orig_toBlob.call(_noisyClone(this), cb, type, q);
     };
-
-    const _orig_getImageData = CanvasRenderingContext2D.prototype.getImageData;
-    CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {
-      const id = _orig_getImageData.call(this, sx, sy, sw, sh);
-      const d  = id.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const n = _px(i);
-        d[i]   = Math.max(0, Math.min(255, d[i]   + n));
-        d[i+1] = Math.max(0, Math.min(255, d[i+1] + n));
-        d[i+2] = Math.max(0, Math.min(255, d[i+2] + n));
-      }
-      return id;
-    };
+    // NOTE: getImageData is intentionally NOT noised — mutating readback
+    // breaks legitimate pixel-reading apps (color pickers, image editors,
+    // signature capture) and is itself detectable.
   } catch(e) {}
-
-  // ── 9. WebGL vendor / renderer spoof ────────────────────────────────────
-  // Replaces GPU strings with generic Intel values so WebGL fingerprint
-  // cannot identify your real GPU model.
-  function _patchWebGL(proto) {
-    if (!proto) return;
-    const _orig = proto.getParameter;
-    proto.getParameter = function(p) {
-      if (p === 37445) return 'Intel Open Source Technology Center';          // UNMASKED_VENDOR_WEBGL
-      if (p === 37446) return 'Mesa DRI Intel(R) Iris(R) Plus Graphics (ICL GT2)'; // UNMASKED_RENDERER_WEBGL
-      return _orig.call(this, p);
-    };
-  }
-  try { if (typeof WebGLRenderingContext  !== 'undefined') _patchWebGL(WebGLRenderingContext.prototype);  } catch(e) {}
-  try { if (typeof WebGL2RenderingContext !== 'undefined') _patchWebGL(WebGL2RenderingContext.prototype); } catch(e) {}
 
   // ── 10. Audio fingerprint noise ──────────────────────────────────────────
   // Adds a sub-microscopic perturbation (~1e-7) to audio sample data.
@@ -954,7 +1044,11 @@ export class ChromeConnector {
    */
   async listTabs(): Promise<TabInfo[]> {
     try {
-      const targets = await CDP.List({ port: this.port });
+      const targets = await withTimeout(
+        CDP.List({ port: this.port }),
+        5000,
+        'Timed out listing Chrome targets (browser unresponsive?)'
+      );
 
       // Return interesting targets (pages, service workers, extensions)
       // Removed strict 'page' filter to allow finding service workers as requested
@@ -973,11 +1067,14 @@ export class ChromeConnector {
   }
 
   /**
-   * Get active tab
+   * Get the most recently used tab.
    */
   async getActiveTab(): Promise<TabInfo | null> {
     const tabs = await this.listTabs();
-    return tabs.length > 0 ? tabs[0] : null;
+    // Prefer an actual page: listTabs also returns service workers, and the
+    // first entry of /json/list is not guaranteed to be the front tab.
+    const pages = tabs.filter((t) => t.type === 'page');
+    return (pages.length > 0 ? pages[0] : tabs[0]) ?? null;
   }
 
   /**
@@ -1029,7 +1126,7 @@ export class ChromeConnector {
       const target = tabId || this.currentTabId;
 
       if (!target) {
-        // Get the first available tab
+        // Pick a default tab.
         // If this fails, it means Chrome is definitely not connected
         let tabs;
         try {
@@ -1042,7 +1139,10 @@ export class ChromeConnector {
         if (tabs.length === 0) {
           throw new Error(`Chrome is accessible on port ${this.port} but has no open tabs/pages.`);
         }
-        return await CDP({ port: this.port, target: tabs[0].id });
+        // Prefer a real page target: attaching UI tools (Page/DOM/Runtime) to
+        // a service worker target fails confusingly.
+        const pageTab = tabs.find((t) => t.type === 'page') ?? tabs[0];
+        return await CDP({ port: this.port, target: pageTab.id });
       }
 
       return await CDP({ port: this.port, target });

@@ -11,7 +11,7 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
     // Apply / re-apply stealth mode
     {
       name: 'enable_stealth_mode',
-      description: 'Re-apply stealth patches to a specific tab (webdriver flag, canvas/WebGL/audio fingerprinting, plugins). Stealth is already active automatically on launch; use this only to target a different tab or to force re-injection.',
+      description: 'Re-apply stealth patches to a specific tab (webdriver=false, canvas/audio fingerprint noise, plugin fallback). Stealth is already active automatically on launch; use this only to target a different tab or to force re-injection.',
       inputSchema: z.object({
         tabId: z.string().optional().describe('Tab ID (optional)')
       }),
@@ -21,7 +21,7 @@ export function createAntiDetectionTools(connector: ChromeConnector) {
         await connector.applyStealthMode(tabId, true);
         return {
           success: true,
-          message: 'Stealth mode applied: webdriver hidden, canvas/WebGL/audio fingerprints randomised, realistic plugins/navigator set.'
+          message: 'Stealth mode applied: webdriver=false, session-stable canvas/audio fingerprint noise, plugin fallback only when needed.'
         };
       }
     },

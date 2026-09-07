@@ -2,6 +2,77 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - hardening pass (Phase 1)
+
+### 🔒 Security
+- **CDP debug port no longer open to the web.** Chrome is launched with a restrictive
+  `--remote-allow-origins` allowlist (`localhost`/`devtools://`) instead of `*`. The MCP server
+  connects without an Origin header, so it is unaffected, but no webpage can hijack the debug port
+  to read cookies, run JS or navigate to `file://` anymore (`src/chrome-connector.ts`).
+- **URL allow-list on navigation.** `browser_action`/`manage_tabs`/all smart-workflow navigation
+  tools validate URLs (http/https, plus `about:blank`/`chrome://newtab/`). `file://` is blocked by
+  default (`CHROME_MCP_ALLOW_FILE_URLS=1` re-enables for local testing) — closes the arbitrary
+  local-file read primitive (`src/utils/helpers.ts`).
+- **Sandboxed file output.** HAR exports and downloads resolve inside the working directory or temp
+  folder only; filenames are sanitized (`src/utils/file-storage.ts`, used by `export_har_file`,
+  `download_file`).
+- **Cookie values hidden by default.** `get_cookies`, `export_session` and
+  `manage_browser_session` redact cookie values unless `includeValues=true` is passed; import/load
+  skip valueless cookies with an explicit message instead of silently writing empty cookies.
+- Removed a `console.log` that ran inside the stdio process and would corrupt the JSON-RPC stream
+  (`add_advanced_interception_pattern` now logs to stderr).
+- JS-string interpolation of URLs/scopeURLs hardened (`JSON.stringify`) in `resend_network_request`,
+  `test_api_endpoint`, `unregister_service_worker`, `update_service_worker`.
+
+### 🛠 Reliability
+- **Interception enable/disable now happen on the SAME CDP session** (Fetch domain state is
+  session-scoped). Previously `disable_response_interception` / `stop_capturing_network_requests`
+  disabled a different session — a silent no-op that could freeze the page on the next matching
+  request. All enable paths now store their owning session + listener unsubscribe handles, and every
+  disable/modify/continue/clear tears down through that owner.
+- **Mock endpoints work together.** Creating mocks refreshes the Fetch pattern set with ALL mock
+  patterns and keeps ONE listener per tab (previously each mock replaced the last one and stacked
+  listeners); delete/clear re-sync or detach correctly. Slow mocks (latency > timeout) no longer
+  time out and silently fall through.
+- **WebSocket capture** has bounded buffers (200 connections / 1000 messages) and its disable tool
+  detaches listeners + disables the domain. `send_websocket_message` no longer reports false success
+  (CDP cannot push frames into an open WebSocket; it now hooks new connections and reports honestly).
+- **HAR fixes:** `stop_har_recording → export_har_file` flow works (the finished recording is parked
+  instead of deleted); creator version reads `package.json`; queryString and response content size
+  are populated; entry `time` uses monotonic deltas instead of subtracting wall-time from a
+  monotonic clock; entries are capped.
+- **Per-tool timeout backstop** (120s) so a hung CDP call can never leave an MCP request pending
+  forever (`src/server.ts`); `print_to_pdf`, `CDP.List` liveness probes and reload waits got explicit
+  timeouts.
+- **Navigate/load race fixed** in five smart-workflow tools and `browser_action` reload: the one-shot
+  `loadEventFired` is now subscribed BEFORE navigation is triggered (awaited after → hang on fast
+  pages).
+- **Lifecycle:** `close_browser`/server shutdown kill a Chrome that THIS server launched (no more
+  orphan browsers with open debug ports between restarts); module capture/interception state resets
+  on browser disconnect; `connect()` closes a previous live client; process-death cleanup is
+  re-entrancy-guarded and closes persistent clients; default tab selection prefers real pages over
+  service-worker targets.
+- **Stealth script** now reports `navigator.webdriver=false` (real Chrome value), keeps the
+  fingerprint seed stable per origin during a session, and removed the hard-coded
+  `platform:'Win32'`/Intel-GPU/screen spoofs that contradicted the real environment (a self-inflicted
+  detection signal on non-Windows/non-Intel machines).
+
+### 🧹 Housekeeping
+- `package.json`: clean build (`dist` wiped before `tsc`), `files: ["dist"]`, `types`, `pack:check`;
+  deleted the stale `package/` build duplicate and the outdated `verify-tools.ts` dev script.
+- New unit tests for URL validation, filename sanitization and the output sandbox
+  (`src/tests/security.test.ts`); validated with a real-Chrome headless E2E smoke.
+
+### 📖 Docs (Phase 2)
+- `docs/USAGE_GUIDE.md` rewritten against the current (v1.4) consolidated tool vocabulary
+  (no more `navigate`/`click`/`type`/`list_tabs`/`enable_network_interception`/`get_har_entries`),
+  with the action-enum tools, resources/prompts and the security defaults.
+- `docs/TOOLS.md` added: complete machine-checked reference of all 90 tools (core vs advanced).
+- `docs/INSTALL.md` rewritten in English with the current package name/version, npx usage and no
+  machine-specific absolute paths; `docs/mcp-config-example.json` is now a reusable npx template.
+- `scripts/validate-docs.mjs` + `npm run docs:check`: fails CI/build docs whenever a guide cites a
+  tool that does not exist (guards against the v1.0→v1.4 drift class). CI now runs this step.
+
 ## [1.4.0] - 2026-08-19
 
 ### ✨ MCP Resources

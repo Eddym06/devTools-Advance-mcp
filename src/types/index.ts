@@ -57,7 +57,8 @@ export interface ConsoleMessage {
 
 export interface Cookie {
   name: string;
-  value: string;
+  /** Absent when the cookie was exported with values redacted. */
+  value?: string;
   domain: string;
   path: string;
   expires?: number;

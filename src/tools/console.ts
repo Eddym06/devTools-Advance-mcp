@@ -25,6 +25,15 @@ const MAX_TEXT_LENGTH = 2000;
 const buffers = new Map<string, ConsoleEntry[]>();
 const attached = new Set<string>();
 
+/**
+ * Reset console capture state — invoked when the browser disconnects/relaunches
+ * so stale buffers and "attached" flags never outlive the CDP session.
+ */
+export function resetConsoleState(): void {
+  buffers.clear();
+  attached.clear();
+}
+
 function truncate(text: string): string {
   return text.length > MAX_TEXT_LENGTH
     ? `${text.slice(0, MAX_TEXT_LENGTH)}… [truncated, ${text.length} chars total]`

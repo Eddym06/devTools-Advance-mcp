@@ -8,10 +8,9 @@
  */
 
 import { z } from 'zod';
-import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import type { ChromeConnector } from '../chrome-connector.js';
+import { resolveOutputDir, sanitizeFilename } from '../utils/file-storage.js';
 
 export function createDownloadTools(connector: ChromeConnector) {
   return [
@@ -29,8 +28,8 @@ export function createDownloadTools(connector: ChromeConnector) {
       handler: async ({ selector, downloadDir, tabId, timeoutMs = 30000 }: any) => {
         await connector.verifyConnection();
 
-        const dir = downloadDir || path.join(os.tmpdir(), 'chrome-mcp-downloads');
-        fs.mkdirSync(dir, { recursive: true });
+        // Confined to the working dir or temp folder (default: temp).
+        const dir = resolveOutputDir(downloadDir, 'chrome-mcp-downloads');
 
         // Download behavior is a browser-level setting, not per-target, so
         // it must go through the main connection rather than a tab session.
@@ -60,12 +59,12 @@ export function createDownloadTools(connector: ChromeConnector) {
             if (params.state === 'completed') {
               cleanup();
               clearTimeout(timeout);
-              const filename = params.filePath ? path.basename(params.filePath) : suggestedFilename;
-              if (!filename) {
+              const rawFilename = params.filePath ? path.basename(params.filePath) : suggestedFilename;
+              if (!rawFilename) {
                 reject(new Error('Download completed but no filename was reported'));
                 return;
               }
-              resolve(filename);
+              resolve(sanitizeFilename(rawFilename));
             } else if (params.state === 'canceled') {
               cleanup();
               clearTimeout(timeout);
